@@ -9,6 +9,8 @@ import EmployeeCreatePage from "./pages/EmployeeCreatePage";
 import SalaryProfileCreatePage from "./pages/SalaryProfileCreatePage";
 import PayrollCreatePage from "./pages/PayrollCreatePage";
 import { isAuthed } from "./lib/auth";
+import PayrollEditPage from "./pages/PayrollEditPage";
+import EmployeeEditPage from "./pages/EmployeeEditPage";
 
 export default function App() {
   return (
@@ -28,10 +30,12 @@ export default function App() {
           <Route path="/payrolls" element={<PayrollList />} />
           <Route path="/payrolls/new" element={<PayrollCreatePage />} />
           <Route path="/payrolls/:id" element={<PayrollDetail />} />
+          <Route path="/payrolls/:id/edit" element={<PayrollEditPage />} />
 
           <Route path="/employees" element={<EmployeesPage />} />
           <Route path="/employees/new" element={<EmployeeCreatePage />} />
           <Route path="/employees/:id/salary-profile/new" element={<SalaryProfileCreatePage />} />
+          <Route path="/employees/:id/edit" element={<EmployeeEditPage />} />
         </Route>
 
         {/* Fallback: kalau belum login -> /login, kalau sudah -> /payrolls */}

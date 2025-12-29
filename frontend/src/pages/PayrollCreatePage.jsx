@@ -22,7 +22,7 @@ export default function PayrollCreatePage() {
 
   const [form, setForm] = useState({
     employee_id: "",
-    periode: todayISO, // kita pakai tanggal (bisa kamu ubah jadi bulan nanti)
+    periode: todayISO,
     gaji_pokok: "",
     tunjangan: "",
     potongan: "",
@@ -76,10 +76,12 @@ export default function PayrollCreatePage() {
     setLoadingEmp(true);
     setServerError("");
     try {
-      const data = await fetchEmployeesLite();
+      // ✅ hanya employee active
+      const data = await fetchEmployeesLite("active");
       setEmployees(Array.isArray(data) ? data : []);
     } catch (e) {
       setServerError(e.message || "Gagal mengambil employees.");
+      setEmployees([]);
     } finally {
       setLoadingEmp(false);
     }
@@ -103,7 +105,6 @@ export default function PayrollCreatePage() {
       const data = await fetchCurrentSalaryProfile(form.employee_id, form.periode);
       setProfileInfo(data);
 
-      // data dari backend salaryProfile(): base_salary, allowance_fixed, deduction_fixed
       setField("gaji_pokok", data?.base_salary ?? "0");
       setField("tunjangan", data?.allowance_fixed ?? "0");
       setField("potongan", data?.deduction_fixed ?? "0");
@@ -134,7 +135,7 @@ export default function PayrollCreatePage() {
 
       const data = await createPayroll(payload);
 
-      const payrollId = data?.payroll?.id ?? data?.id; // jaga-jaga struktur responsenya beda
+      const payrollId = data?.payroll?.id ?? data?.id;
       if (!payrollId) {
         nav("/payrolls");
         return;
@@ -142,8 +143,8 @@ export default function PayrollCreatePage() {
 
       nav(`/payrolls/${payrollId}`);
     } catch (err) {
-      // kalau backend kirim errors validasi
       const p = err?.payload;
+
       if (p?.errors) {
         const mapped = {};
         for (const k of Object.keys(p.errors)) {
@@ -162,37 +163,20 @@ export default function PayrollCreatePage() {
     <div style={{ maxWidth: 980 }}>
       <h2 style={{ marginBottom: 6 }}>Create Payroll</h2>
       <p style={{ marginTop: 0, opacity: 0.7 }}>
-        Pilih employee & periode, lalu generate dari salary profile, kemudian simpan payroll.
+        Pilih employee & periode, generate dari salary profile, lalu simpan payroll.
       </p>
 
       {serverError && (
-        <div
-          style={{
-            background: "#fdecea",
-            border: "1px solid #f5c2c7",
-            padding: 12,
-            borderRadius: 10,
-            marginBottom: 16,
-            color: "#7a271a",
-          }}
-        >
+        <div style={alertStyle}>
           {serverError}
         </div>
       )}
 
-      <form
-        onSubmit={handleSubmit}
-        style={{
-          background: "#fff",
-          borderRadius: 14,
-          padding: 18,
-          border: "1px solid #eee",
-        }}
-      >
-        {/* Select Employee + Periode */}
+      <form onSubmit={handleSubmit} style={formWrap}>
+        {/* Employee + Periode */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
           <div>
-            <label style={{ fontWeight: 600, fontSize: 14 }}>Employee</label>
+            <label style={labelStyle}>Employee (Active)</label>
             <select
               value={form.employee_id}
               onChange={(e) => setField("employee_id", e.target.value)}
@@ -200,19 +184,21 @@ export default function PayrollCreatePage() {
               disabled={loadingEmp}
             >
               <option value="">
-                {loadingEmp ? "Loading..." : "-- pilih employee --"}
+                {loadingEmp ? "Loading..." : employees.length ? "-- pilih employee --" : "Tidak ada employee active"}
               </option>
+
               {employees.map((emp) => (
                 <option key={emp.id} value={emp.id}>
                   {emp.employee_code} — {emp.name}
                 </option>
               ))}
             </select>
+
             {errors.employee_id && <div style={errorStyle}>{errors.employee_id}</div>}
           </div>
 
           <div>
-            <label style={{ fontWeight: 600, fontSize: 14 }}>Periode</label>
+            <label style={labelStyle}>Periode</label>
             <input
               type="date"
               value={form.periode}
@@ -232,23 +218,14 @@ export default function PayrollCreatePage() {
           >
             {loadingProfile ? "Generating..." : "Generate from Salary Profile"}
           </button>
+
           <button type="button" onClick={loadEmployees} disabled={saving} style={btnGhost}>
             Refresh Employees
           </button>
         </div>
 
         {profileInfo && (
-          <div
-            style={{
-              marginTop: 14,
-              background: "#f7f7f7",
-              border: "1px solid #eee",
-              borderRadius: 12,
-              padding: 12,
-              fontSize: 13,
-              opacity: 0.9,
-            }}
-          >
+          <div style={profileBox}>
             <div style={{ fontWeight: 700, marginBottom: 6 }}>Salary Profile (aktif)</div>
             <div>Effective From: {profileInfo.effective_from}</div>
             <div>Suggested Total: {profileInfo.suggested_total}</div>
@@ -285,7 +262,7 @@ export default function PayrollCreatePage() {
         </div>
 
         <div style={{ marginTop: 12 }}>
-          <label style={{ fontWeight: 600, fontSize: 14 }}>Catatan</label>
+          <label style={labelStyle}>Catatan</label>
           <textarea
             value={form.catatan}
             onChange={(e) => setField("catatan", e.target.value)}
@@ -295,23 +272,14 @@ export default function PayrollCreatePage() {
           {errors.catatan && <div style={errorStyle}>{errors.catatan}</div>}
         </div>
 
-        <div
-          style={{
-            marginTop: 14,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            background: "#fafafa",
-            border: "1px solid #eee",
-            borderRadius: 12,
-            padding: 12,
-          }}
-        >
+        <div style={totalBox}>
           <div style={{ fontWeight: 700 }}>Total: {String(total)}</div>
+
           <div style={{ display: "flex", gap: 10 }}>
             <button type="submit" disabled={saving} style={btnPrimary}>
               {saving ? "Saving..." : "Save Payroll"}
             </button>
+
             <button type="button" onClick={() => nav("/payrolls")} disabled={saving} style={btnGhost}>
               Cancel
             </button>
@@ -325,7 +293,7 @@ export default function PayrollCreatePage() {
 function Field({ label, value, onChange, placeholder, error }) {
   return (
     <div>
-      <label style={{ fontWeight: 600, fontSize: 14 }}>{label}</label>
+      <label style={labelStyle}>{label}</label>
       <input
         value={value}
         placeholder={placeholder}
@@ -337,6 +305,8 @@ function Field({ label, value, onChange, placeholder, error }) {
   );
 }
 
+const labelStyle = { fontWeight: 600, fontSize: 14 };
+
 const inputStyle = {
   width: "100%",
   padding: "10px 12px",
@@ -346,11 +316,7 @@ const inputStyle = {
   marginTop: 6,
 };
 
-const errorStyle = {
-  marginTop: 6,
-  color: "#b42318",
-  fontSize: 13,
-};
+const errorStyle = { marginTop: 6, color: "#b42318", fontSize: 13 };
 
 const btnPrimary = {
   padding: "10px 14px",
@@ -368,4 +334,41 @@ const btnGhost = {
   background: "#fff",
   color: "#111",
   cursor: "pointer",
+};
+
+const formWrap = {
+  background: "#fff",
+  borderRadius: 14,
+  padding: 18,
+  border: "1px solid #eee",
+};
+
+const alertStyle = {
+  background: "#fdecea",
+  border: "1px solid #f5c2c7",
+  padding: 12,
+  borderRadius: 10,
+  marginBottom: 16,
+  color: "#7a271a",
+};
+
+const profileBox = {
+  marginTop: 14,
+  background: "#f7f7f7",
+  border: "1px solid #eee",
+  borderRadius: 12,
+  padding: 12,
+  fontSize: 13,
+  opacity: 0.9,
+};
+
+const totalBox = {
+  marginTop: 14,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  background: "#fafafa",
+  border: "1px solid #eee",
+  borderRadius: 12,
+  padding: 12,
 };

@@ -9,10 +9,18 @@ use Illuminate\Validation\Rule;
 
 class EmployeeController extends Controller
 {
-    public function index()
+    public function index(Request $request)
     {
+        $qStatus = $request->query('status'); // "active" / "inactive" / null
+
+        $query = Employee::query()->orderBy('name');
+
+        if ($qStatus) {
+            $query->where('status', $qStatus);
+        }
+
         // list aman: jangan kirim private info
-        return Employee::orderBy('name')->get([
+        return $query->get([
             'id',
             'employee_code',
             'name',
@@ -88,7 +96,6 @@ class EmployeeController extends Controller
             'position' => ['nullable', 'string', 'max:255'],
             'status' => ['required', Rule::in(['active', 'inactive'])],
 
-            // NOTE: samakan max dengan ukuran kolom di DB kamu
             'nik' => ['nullable', 'string', 'max:32'],
             'npwp' => ['nullable', 'string', 'max:32'],
             'phone' => ['nullable', 'string', 'max:20'],
@@ -99,11 +106,10 @@ class EmployeeController extends Controller
             'bank_account_number' => ['nullable', 'string', 'max:50'],
         ]);
 
-        $data['user_id'] = null; // nanti linking user tahap 2
+        $data['user_id'] = null; // linking user tahap 2
 
         $employee = Employee::create($data);
 
-        // response aman: kirim field public aja
         return response()->json([
             'employee' => [
                 'id' => $employee->id,
@@ -118,31 +124,89 @@ class EmployeeController extends Controller
     }
 
     public function storeSalaryProfile(Request $request, Employee $employee)
-{
-    $data = $request->validate([
-        'base_salary' => ['required', 'numeric', 'min:0'],
-        'allowance_fixed' => ['nullable', 'numeric', 'min:0'],
-        'deduction_fixed' => ['nullable', 'numeric', 'min:0'],
-        'effective_from' => ['required', 'date'],
+    {
+        $data = $request->validate([
+            'base_salary' => ['required', 'numeric', 'min:0'],
+            'allowance_fixed' => ['nullable', 'numeric', 'min:0'],
+            'deduction_fixed' => ['nullable', 'numeric', 'min:0'],
+            'effective_from' => ['required', 'date'],
 
-        // optional rate
-        'daily_rate' => ['nullable', 'numeric', 'min:0'],
-        'overtime_rate_per_hour' => ['nullable', 'numeric', 'min:0'],
-        'late_penalty_per_minute' => ['nullable', 'numeric', 'min:0'],
-    ]);
+            'daily_rate' => ['nullable', 'numeric', 'min:0'],
+            'overtime_rate_per_hour' => ['nullable', 'numeric', 'min:0'],
+            'late_penalty_per_minute' => ['nullable', 'numeric', 'min:0'],
+        ]);
 
-    $profile = $employee->salaryProfiles()->create([
-        'base_salary' => $data['base_salary'],
-        'allowance_fixed' => $data['allowance_fixed'] ?? 0,
-        'deduction_fixed' => $data['deduction_fixed'] ?? 0,
-        'daily_rate' => $data['daily_rate'] ?? null,
-        'overtime_rate_per_hour' => $data['overtime_rate_per_hour'] ?? null,
-        'late_penalty_per_minute' => $data['late_penalty_per_minute'] ?? null,
-        'effective_from' => $data['effective_from'],
-    ]);
+        $profile = $employee->salaryProfiles()->create([
+            'base_salary' => $data['base_salary'],
+            'allowance_fixed' => $data['allowance_fixed'] ?? 0,
+            'deduction_fixed' => $data['deduction_fixed'] ?? 0,
+            'daily_rate' => $data['daily_rate'] ?? null,
+            'overtime_rate_per_hour' => $data['overtime_rate_per_hour'] ?? null,
+            'late_penalty_per_minute' => $data['late_penalty_per_minute'] ?? null,
+            'effective_from' => $data['effective_from'],
+        ]);
 
-    return response()->json([
-        'salary_profile' => $profile,
-    ], 201);
-}
+        return response()->json([
+            'salary_profile' => $profile,
+        ], 201);
+    }
+
+    public function update(Request $request, Employee $employee)
+    {
+        $user = $request->user();
+
+        $isPrivileged = in_array($user->role, ['fat', 'director'], true);
+        if (!$isPrivileged) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $data = $request->validate([
+            'employee_code' => [
+                'sometimes', 'string', 'max:50',
+                Rule::unique('employees', 'employee_code')->ignore($employee->id)
+            ],
+            'name' => ['sometimes', 'string', 'max:255'],
+            'department' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'position' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'status' => ['sometimes', Rule::in(['active', 'inactive'])],
+
+            'nik' => ['sometimes', 'nullable', 'string', 'max:32'],
+            'npwp' => ['sometimes', 'nullable', 'string', 'max:32'],
+            'phone' => ['sometimes', 'nullable', 'string', 'max:20'],
+            'address' => ['sometimes', 'nullable', 'string', 'max:500'],
+
+            'bank_name' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'bank_account_name' => ['sometimes', 'nullable', 'string', 'max:100'],
+            'bank_account_number' => ['sometimes', 'nullable', 'string', 'max:50'],
+        ]);
+
+        $employee->update($data);
+
+        return response()->json([
+            'message' => 'Employee updated',
+            'employee' => $employee->fresh(),
+        ]);
+    }
+
+    public function destroy(Request $request, Employee $employee)
+    {
+        $user = $request->user();
+
+        $isPrivileged = in_array($user->role, ['fat', 'director'], true);
+        if (!$isPrivileged) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        // kalau sudah pernah dipakai payroll, block
+        if ($employee->payrolls()->exists()) {
+            return response()->json([
+                'message' => 'Employee tidak bisa dihapus karena sudah memiliki payroll.'
+            ], 422);
+        }
+
+        $employee->salaryProfiles()->delete();
+        $employee->delete();
+
+        return response()->json(['message' => 'Employee deleted']);
+    }
 }

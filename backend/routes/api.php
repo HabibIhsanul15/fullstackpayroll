@@ -25,6 +25,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/payrolls/{payroll}', [PayrollController::class, 'update']);
     Route::patch('/payrolls/{payroll}', [PayrollController::class, 'update']);
     Route::delete('/payrolls/{payroll}', [PayrollController::class, 'destroy']);
+    Route::get('/payrolls/{payroll}/pdf', [PayrollController::class, 'pdf']);
 });
 
 /*

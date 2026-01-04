@@ -1,10 +1,14 @@
-import { Link, Outlet, useNavigate } from "react-router-dom";
+import { Link, Outlet, useNavigate, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { getUser, isAuthed, clearAuth } from "@/lib/auth";
 import { useEffect, useMemo } from "react";
 
 function menuByRole(role) {
-  const base = [{ to: "/payrolls", label: "Payroll" }];
+const base = [{ to: "/payrolls", label: "Payroll" }];
+
+if (role !== "fat" && role !== "director") {
+  base.push({ to: "/my-profile", label: "My Profile" });
+}
 
   if (role === "fat" || role === "director") {
     return [
@@ -19,15 +23,16 @@ function menuByRole(role) {
 
 export default function AppLayout() {
   const navigate = useNavigate();
+  const location = useLocation();
   const user = getUser(); // object atau null
 
-  // kalau token/user gak ada, jangan biarin layout tampil
   useEffect(() => {
     if (!isAuthed() || !user) {
       clearAuth();
       navigate("/login", { replace: true });
     }
-  }, [navigate]); // sengaja ga masukin user biar gak rerun terus
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navigate]);
 
   const menus = useMemo(() => menuByRole(user?.role), [user?.role]);
 
@@ -36,8 +41,12 @@ export default function AppLayout() {
     navigate("/login", { replace: true });
   };
 
-  // saat redirect, jangan render apa-apa (hindari flicker + fetch)
   if (!isAuthed() || !user) return null;
+
+  const isActive = (to) => {
+    // aktif kalau exact, atau nested route (misal /employees/1/edit)
+    return location.pathname === to || location.pathname.startsWith(to + "/");
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -64,7 +73,10 @@ export default function AppLayout() {
               <Link
                 key={m.to}
                 to={m.to}
-                className="block rounded-lg border px-3 py-2 hover:bg-accent"
+                className={[
+                  "block rounded-lg border px-3 py-2 hover:bg-accent",
+                  isActive(m.to) ? "bg-accent font-medium" : "",
+                ].join(" ")}
               >
                 {m.label}
               </Link>

@@ -1,10 +1,9 @@
 import { getToken, clearAuth } from "./auth";
 
-const BASE_URL = "http://127.0.0.1:8000";
+const BASE_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
 const API_PREFIX = "/api";
 
 export async function api(path, { method = "GET", body } = {}) {
-  // path boleh "payrolls" / "/payrolls" / "/api/payrolls" -> dibenerin otomatis
   let cleanPath = path.startsWith("/") ? path : `/${path}`;
   if (!cleanPath.startsWith(API_PREFIX)) cleanPath = `${API_PREFIX}${cleanPath}`;
 
@@ -29,17 +28,19 @@ export async function api(path, { method = "GET", body } = {}) {
   try {
     data = text ? JSON.parse(text) : null;
   } catch {
-    data = text;
+    data = text; // fallback
   }
 
-  // kalau 401: token invalid / gak dikirim / expired
   if (res.status === 401) {
-    clearAuth(); // biar gak loop error terus
+    clearAuth();
   }
 
   if (!res.ok) {
     const msg =
-      (data && typeof data === "object" && data.message) ? data.message : `HTTP ${res.status}`;
+      data && typeof data === "object" && data.message
+        ? data.message
+        : `HTTP ${res.status}`;
+
     const err = new Error(msg);
     err.status = res.status;
     err.data = data;

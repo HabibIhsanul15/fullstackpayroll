@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Employee;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 
@@ -181,6 +182,13 @@ class EmployeeController extends Controller
         ]);
 
         $employee->update($data);
+                // ✅ kalau admin mengubah "name" employee, sinkron juga ke tabel users
+        if (array_key_exists('name', $data) && $employee->user_id) {
+            User::where('id', $employee->user_id)->update([
+                'name' => $data['name'],
+            ]);
+        }
+
 
         return response()->json([
             'message' => 'Employee updated',

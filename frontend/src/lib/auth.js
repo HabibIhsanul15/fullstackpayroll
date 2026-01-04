@@ -1,12 +1,32 @@
 const TOKEN_KEY = "payroll_token";
 const USER_KEY  = "payroll_user";
 
+function notifyAuthChanged() {
+  window.dispatchEvent(new Event("auth:changed"));
+}
+
 export function saveAuth(token, user) {
   if (token) localStorage.setItem(TOKEN_KEY, token);
   else localStorage.removeItem(TOKEN_KEY);
 
   if (user) localStorage.setItem(USER_KEY, JSON.stringify(user));
   else localStorage.removeItem(USER_KEY);
+
+  notifyAuthChanged();
+}
+
+export function updateAuthUser(patch) {
+  const raw = localStorage.getItem(USER_KEY);
+  if (!raw || raw === "undefined" || raw === "null") return;
+
+  let u = null;
+  try { u = JSON.parse(raw); } catch { return; }
+  if (!u) return;
+
+  const next = { ...u, ...patch };
+  localStorage.setItem(USER_KEY, JSON.stringify(next));
+
+  notifyAuthChanged(); // ✅ ganti ini
 }
 
 export function getToken() {
@@ -15,8 +35,6 @@ export function getToken() {
 
 export function getUser() {
   const raw = localStorage.getItem(USER_KEY);
-
-  // handle value kosong / rusak biar gak nge-crash
   if (!raw || raw === "undefined" || raw === "null") return null;
 
   try {
@@ -31,6 +49,8 @@ export function getUser() {
 export function clearAuth() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
+
+  notifyAuthChanged();
 }
 
 export function isAuthed() {

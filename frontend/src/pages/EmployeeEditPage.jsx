@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api } from "@/lib/api";
-import { getUser } from "@/lib/auth";
+import { getUser, updateAuthUser } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 
@@ -101,6 +101,15 @@ export default function EmployeeEditPage() {
           bank_account_number: form.bank_account_number || null,
         },
       });
+
+      // 🔥 SYNC HEADER DENGAN DATA TERBARU
+      try {
+        const me = await api("/me"); // → /api/me
+        updateAuthUser({ name: me?.name, role: me?.role });
+      } catch (e) {
+        // fallback minimal
+        updateAuthUser({ name: form.name });
+      }
 
       nav("/employees", { replace: true });
     } catch (e) {

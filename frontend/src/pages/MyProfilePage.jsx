@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { fetchMeEmployee, updateMeEmployee } from "@/lib/meApi";
-import { getUser } from "@/lib/auth";
+import { getUser, updateAuthUser } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
+
 
 export default function MyProfilePage() {
   const user = getUser();
@@ -77,6 +78,16 @@ export default function MyProfilePage() {
     setSaving(true);
     try {
       const res = await updateMeEmployee(form);
+
+      // ✅ bikin header langsung ikut berubah (instant)
+      updateAuthUser({ name: form.name });
+
+      // ✅ optional: sinkron dari backend biar paling akurat
+      try {
+        const me = await api("/me"); // api.js kamu auto jadi /api/me
+        updateAuthUser({ name: me?.name, role: me?.role });
+      } catch {}
+
       setOk(res?.message || "Berhasil disimpan.");
     } catch (e) {
       setErr(e.message);
@@ -84,6 +95,7 @@ export default function MyProfilePage() {
       setSaving(false);
     }
   };
+
 
   if (loading) return <div className="p-4">Loading profil...</div>;
 

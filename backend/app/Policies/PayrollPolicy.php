@@ -16,7 +16,12 @@ class PayrollPolicy
     public function view(User $user, Payroll $payroll): bool
     {
         if (in_array($user->role, ['fat','director'], true)) return true;
-        return $user->role === 'staff' && $payroll->user_id === $user->id;
+
+        if ($user->role !== 'staff') return false;
+
+        $payroll->loadMissing('employee:id,user_id');
+
+        return (int)($payroll->employee?->user_id) === (int)$user->id;
     }
 
     public function create(User $user): bool

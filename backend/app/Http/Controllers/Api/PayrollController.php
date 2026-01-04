@@ -24,7 +24,7 @@ class PayrollController extends Controller
         // contoh: ?employee_id=1&periode=2025-12-01
         $query = Payroll::query()->with([
             'user:id,name',
-            'employee:id,employee_code,name,status',
+            'employee:id,user_id,employee_code,name,status',
         ])->orderByDesc('id');
 
         if ($request->filled('employee_id')) {
@@ -72,10 +72,14 @@ class PayrollController extends Controller
     {
         $this->authorize('view', $payroll);
 
-        $payroll->loadMissing([
+        $payroll->unsetRelation('employee');
+        $payroll->unsetRelation('user');
+
+        $payroll->load([
             'user:id,name',
-            'employee:id,employee_code,name,status',
+            'employee:id,user_id,employee_code,name,status',
         ]);
+
 
         $user = $request->user();
         $canSeeNominal = $this->canSeeNominal($user, $payroll);
@@ -112,10 +116,15 @@ public function pdf(Request $request, Payroll $payroll)
 {
     $this->authorize('view', $payroll);
 
-    $payroll->loadMissing([
+    $payroll->unsetRelation('employee');
+    $payroll->unsetRelation('user');
+
+    $payroll->load([
         'user:id,name',
         'employee:id,user_id,employee_code,name,status',
     ]);
+
+
 
     $user = $request->user();
 
@@ -194,7 +203,7 @@ public function pdf(Request $request, Payroll $payroll)
         ]);
 
         // balikin response yang konsisten dengan show (biar frontend enak)
-        $payroll->loadMissing(['user:id,name', 'employee:id,employee_code,name,status']);
+        $payroll->load(['user:id,name', 'employee:id,employee_code,name,status']);
 
         return response()->json([
             'message' => 'Payroll created',

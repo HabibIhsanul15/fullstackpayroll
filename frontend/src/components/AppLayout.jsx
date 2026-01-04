@@ -1,14 +1,17 @@
 import { Link, Outlet, useNavigate, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { getUser, isAuthed, clearAuth } from "@/lib/auth";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { api } from "@/lib/api";
+import { updateAuthUser } from "@/lib/auth";
+
 
 function menuByRole(role) {
-const base = [{ to: "/payrolls", label: "Payroll" }];
+  const base = [{ to: "/payrolls", label: "Payroll" }];
 
-if (role !== "fat" && role !== "director") {
-  base.push({ to: "/my-profile", label: "My Profile" });
-}
+  if (role !== "fat" && role !== "director") {
+    base.push({ to: "/my-profile", label: "My Profile" });
+  }
 
   if (role === "fat" || role === "director") {
     return [
@@ -21,18 +24,57 @@ if (role !== "fat" && role !== "director") {
   return base;
 }
 
+function roleLabel(role) {
+  return (
+    {
+      fat: "Finance Admin",
+      director: "Director",
+      staff: "Staff",
+      admin: "Admin",
+    }[role] || role || "-"
+  );
+}
+
 export default function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
-  const user = getUser(); // object atau null
 
+  // ✅ JADI STATE biar rerender saat berubah
+  const [user, setUser] = useState(() => getUser());
+
+  // ✅ sinkron saat login/logout (custom event) + multi tab (storage)
+  useEffect(() => {
+    const sync = () => setUser(getUser());
+    window.addEventListener("auth:changed", sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener("auth:changed", sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
+
+  // ✅ guard
   useEffect(() => {
     if (!isAuthed() || !user) {
       clearAuth();
       navigate("/login", { replace: true });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [navigate]);
+  }, [navigate, user]);
+
+    // ✅ auto-sync data user dari backend saat pindah halaman
+  useEffect(() => {
+    if (!isAuthed()) return;
+
+    (async () => {
+      try {
+        const me = await api("/me"); // -> /api/me
+        updateAuthUser({ name: me?.name, role: me?.role, email: me?.email });
+      } catch {
+        // ignore
+      }
+    })();
+  }, [location.pathname]);
+
 
   const menus = useMemo(() => menuByRole(user?.role), [user?.role]);
 
@@ -44,7 +86,6 @@ export default function AppLayout() {
   if (!isAuthed() || !user) return null;
 
   const isActive = (to) => {
-    // aktif kalau exact, atau nested route (misal /employees/1/edit)
     return location.pathname === to || location.pathname.startsWith(to + "/");
   };
 
@@ -56,7 +97,9 @@ export default function AppLayout() {
 
           <div className="flex items-center gap-3 text-sm">
             <span className="text-muted-foreground">
-              {user?.name} • {user?.role}
+              <span className="font-medium text-foreground">{user?.name ?? "-"}</span>
+              {" "}•{" "}
+              <span>{roleLabel(user?.role)}</span>
             </span>
 
             <Button variant="outline" size="sm" onClick={handleLogout}>

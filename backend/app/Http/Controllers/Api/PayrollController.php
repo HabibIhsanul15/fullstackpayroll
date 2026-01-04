@@ -108,22 +108,18 @@ class PayrollController extends Controller
         ]);
     }
 
-    public function pdf(Request $request, Payroll $payroll)
+public function pdf(Request $request, Payroll $payroll)
 {
     $this->authorize('view', $payroll);
 
     $payroll->loadMissing([
         'user:id,name',
-        'employee:id,employee_code,name,status',
+        'employee:id,user_id,employee_code,name,status',
     ]);
 
     $user = $request->user();
 
-    // ✅ Samakan dengan logika yang kamu pakai untuk boleh lihat nominal
-    $canSeeNominal = in_array($user->role, ['fat','director'], true)
-        || ((int)($user->employee_id ?? 0) === (int)$payroll->employee_id);
-
-    if (!$canSeeNominal) {
+    if (!$this->canSeeNominal($user, $payroll)) {
         return response()->json([
             'message' => 'Tidak memiliki akses untuk membuka PDF slip gaji.',
         ], 403);
@@ -137,11 +133,11 @@ class PayrollController extends Controller
         ($payroll->employee?->employee_code ?? $payroll->employee_id) .
         '-' . optional($payroll->periode)->format('Y-m') . '.pdf';
 
-    // ✅ inline = buka di tab baru (bisa print)
     return response($pdf->output(), 200)
         ->header('Content-Type', 'application/pdf')
         ->header('Content-Disposition', 'inline; filename="'.$filename.'"');
 }
+
 
     /**
      * POST /api/payrolls
@@ -289,20 +285,25 @@ class PayrollController extends Controller
      *
      * NOTE: jangan pakai "creator payroll" sebagai owner slip, itu beda konsep.
      */
-    private function canSeeNominal($user, Payroll $payroll): bool
-    {
-        if (!$user) return false;
+private function canSeeNominal($user, Payroll $payroll): bool
+{
+    if (!$user) return false;
 
-        // role berwenang
-        if (in_array($user->role, ['fat', 'director'], true)) {
-            return true;
-        }
-
-        // pegawai pemilik slip (kalau relasi user->employee_id ada)
-        if (isset($user->employee_id) && $user->employee_id) {
-            return (int) $user->employee_id === (int) $payroll->employee_id;
-        }
-
-        return false;
+    if (in_array($user->role, ['fat', 'director'], true)) {
+        return true;
     }
+
+    // staff pemilik slip: prioritas pakai employee_id
+    if (!empty($user->employee_id) && (int)$user->employee_id === (int)$payroll->employee_id) {
+        return true;
+    }
+
+    // fallback: kalau user.employee_id belum sinkron, cek employee.user_id
+    $emp = $payroll->employee;
+    if ($emp && (int)$emp->user_id === (int)$user->id) {
+        return true;
+    }
+
+    return false;
+}
 }

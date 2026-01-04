@@ -15,7 +15,7 @@ class User extends Authenticatable
         'name',
         'email',
         'password',
-        'role', // penting kalau kamu create user sekalian isi role
+        'role',
     ];
 
     protected $hidden = [
@@ -33,6 +33,11 @@ class User extends Authenticatable
 
     public function payrolls()
     {
-        return $this->hasMany(\App\Models\Payroll::class);
+        return $this->hasMany(\App\Models\Payroll::class, 'user_id');
+    }
+
+    public function employee()
+    {
+        return $this->hasOne(\App\Models\Employee::class, 'user_id');
     }
 }

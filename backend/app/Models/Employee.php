@@ -14,28 +14,15 @@ class Employee extends Model
         'position',
         'status',
 
-        // private info
         'nik',
         'npwp',
         'phone',
         'address',
 
-        // bank info
         'bank_name',
         'bank_account_name',
         'bank_account_number',
     ];
-
-    // ❌ jangan dulu pakai encrypted cast (biar DB masuk normal)
-    // protected $casts = [
-    //     'nik' => 'encrypted',
-    //     'npwp' => 'encrypted',
-    //     'phone' => 'encrypted',
-    //     'address' => 'encrypted',
-    //     'bank_name' => 'encrypted',
-    //     'bank_account_name' => 'encrypted',
-    //     'bank_account_number' => 'encrypted',
-    // ];
 
     public function payrolls()
     {
@@ -44,12 +31,12 @@ class Employee extends Model
 
     public function user()
     {
-        return $this->belongsTo(User::class);
+        return $this->belongsTo(\App\Models\User::class, 'user_id');
     }
 
     public function salaryProfiles()
     {
-        return $this->hasMany(SalaryProfile::class);
+        return $this->hasMany(\App\Models\SalaryProfile::class, 'employee_id');
     }
 
     public function currentSalaryProfile($date = null)

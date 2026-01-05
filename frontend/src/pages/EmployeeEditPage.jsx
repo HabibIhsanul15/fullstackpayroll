@@ -16,7 +16,6 @@ export default function EmployeeEditPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  // ✅ form fields
   const [form, setForm] = useState({
     employee_code: "",
     name: "",
@@ -24,40 +23,35 @@ export default function EmployeeEditPage() {
     position: "",
     status: "active",
 
-    // private
     nik: "",
     npwp: "",
     phone: "",
     address: "",
 
-    // bank
     bank_name: "",
     bank_account_name: "",
     bank_account_number: "",
   });
 
-  // ✅ kalau bukan FAT/DIRECTOR, lempar balik (biar aman)
+  // 🔒 Guard
   useEffect(() => {
     if (!canManage) nav("/employees", { replace: true });
   }, [canManage, nav]);
 
-  // ✅ load data employee
+  // 📥 Load employee
   useEffect(() => {
     (async () => {
       setErr("");
       setLoading(true);
       try {
         const data = await api(`/employees/${id}`);
-
-        setForm((p) => ({
-          ...p,
+        setForm({
           employee_code: data.employee_code ?? "",
           name: data.name ?? "",
           department: data.department ?? "",
           position: data.position ?? "",
           status: data.status ?? "active",
 
-          // private (kalau tidak berhak, biasanya undefined)
           nik: data.nik ?? "",
           npwp: data.npwp ?? "",
           phone: data.phone ?? "",
@@ -66,7 +60,7 @@ export default function EmployeeEditPage() {
           bank_name: data.bank_name ?? "",
           bank_account_name: data.bank_account_name ?? "",
           bank_account_number: data.bank_account_number ?? "",
-        }));
+        });
       } catch (e) {
         setErr(e.message);
       } finally {
@@ -81,33 +75,26 @@ export default function EmployeeEditPage() {
     setSaving(true);
 
     try {
-      // ✅ kirim semua field (backend kamu pakai "sometimes", aman)
       await api(`/employees/${id}`, {
         method: "PUT",
         body: {
-          employee_code: form.employee_code,
-          name: form.name,
+          ...form,
           department: form.department || null,
           position: form.position || null,
-          status: form.status,
-
           nik: form.nik || null,
           npwp: form.npwp || null,
           phone: form.phone || null,
           address: form.address || null,
-
           bank_name: form.bank_name || null,
           bank_account_name: form.bank_account_name || null,
           bank_account_number: form.bank_account_number || null,
         },
       });
 
-      // 🔥 SYNC HEADER DENGAN DATA TERBARU
       try {
-        const me = await api("/me"); // → /api/me
+        const me = await api("/me");
         updateAuthUser({ name: me?.name, role: me?.role });
-      } catch (e) {
-        // fallback minimal
+      } catch {
         updateAuthUser({ name: form.name });
       }
 
@@ -120,216 +107,181 @@ export default function EmployeeEditPage() {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Edit Employee</h1>
-        <Button variant="outline" onClick={() => nav(-1)}>
-          Back
-        </Button>
+    <div className="relative">
+      {/* soft background */}
+      <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
+        <div className="absolute -top-40 -left-40 h-[520px] w-[520px] rounded-full bg-sky-200/45 blur-3xl" />
+        <div className="absolute -bottom-44 -right-44 h-[620px] w-[620px] rounded-full bg-indigo-200/35 blur-3xl" />
       </div>
 
-      {err && (
-        <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-red-700">
-          {err}
+      <div className="space-y-6">
+        {/* Header */}
+        <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <div>
+            <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/70 px-4 py-2 shadow-sm">
+              <span className="h-2 w-2 rounded-full bg-sky-500" />
+              <span className="text-sm font-semibold text-slate-700">
+                Human Plus Institute
+              </span>
+            </div>
+
+            <h1 className="mt-4 text-3xl font-black tracking-tight text-slate-900">
+              Edit Employee
+            </h1>
+            <p className="mt-1 text-sm text-slate-600">
+              Perbarui data pegawai untuk kebutuhan payroll dan administrasi.
+            </p>
+          </div>
+
+          <Button
+            variant="outline"
+            className="rounded-2xl bg-white/70 border-slate-200 hover:bg-white"
+            onClick={() => nav(-1)}
+          >
+            Back
+          </Button>
         </div>
-      )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Employee Form</CardTitle>
-        </CardHeader>
+        {err && (
+          <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+            {err}
+          </div>
+        )}
 
-        <CardContent>
-          {loading ? (
-            <p className="text-sm text-muted-foreground">Loading...</p>
-          ) : (
-            <form onSubmit={submit} className="space-y-6">
-              {/* Basic */}
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <label className="text-sm">Employee Code</label>
-                  <input
-                    className="w-full rounded-md border px-3 py-2"
-                    value={form.employee_code}
-                    onChange={(e) =>
-                      setForm((p) => ({ ...p, employee_code: e.target.value }))
-                    }
-                    required
-                  />
-                </div>
+        {/* Form Card */}
+        <Card className="rounded-3xl border border-slate-200 bg-white/75 backdrop-blur-xl shadow-[0_16px_50px_rgba(2,6,23,0.06)]">
+          <CardHeader>
+            <CardTitle className="text-base">Employee Form</CardTitle>
+          </CardHeader>
 
-                <div className="space-y-1">
-                  <label className="text-sm">Name</label>
-                  <input
-                    className="w-full rounded-md border px-3 py-2"
-                    value={form.name}
-                    onChange={(e) =>
-                      setForm((p) => ({ ...p, name: e.target.value }))
-                    }
-                    required
-                  />
-                </div>
+          <CardContent>
+            {loading ? (
+              <p className="text-sm text-slate-500">Loading...</p>
+            ) : (
+              <form onSubmit={submit} className="space-y-8">
+                {/* BASIC */}
+                <section className="space-y-4">
+                  <h3 className="text-sm font-bold text-slate-900">Basic Information</h3>
 
-                <div className="space-y-1">
-                  <label className="text-sm">Department</label>
-                  <input
-                    className="w-full rounded-md border px-3 py-2"
-                    value={form.department}
-                    onChange={(e) =>
-                      setForm((p) => ({ ...p, department: e.target.value }))
-                    }
-                    placeholder="Optional"
-                  />
-                </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <Input label="Employee Code" value={form.employee_code} required
+                      onChange={(v) => setForm(p => ({ ...p, employee_code: v }))} />
+                    <Input label="Name" value={form.name} required
+                      onChange={(v) => setForm(p => ({ ...p, name: v }))} />
+                    <Input label="Department" value={form.department}
+                      onChange={(v) => setForm(p => ({ ...p, department: v }))} />
+                    <Input label="Position" value={form.position}
+                      onChange={(v) => setForm(p => ({ ...p, position: v }))} />
+                  </div>
 
-                <div className="space-y-1">
-                  <label className="text-sm">Position</label>
-                  <input
-                    className="w-full rounded-md border px-3 py-2"
-                    value={form.position}
-                    onChange={(e) =>
-                      setForm((p) => ({ ...p, position: e.target.value }))
-                    }
-                    placeholder="Optional"
-                  />
-                </div>
-
-                <div className="space-y-1 col-span-2">
-                  <label className="text-sm">Status</label>
-                  <select
-                    className="w-full rounded-md border px-3 py-2"
+                  <Select
+                    label="Status"
                     value={form.status}
-                    onChange={(e) =>
-                      setForm((p) => ({ ...p, status: e.target.value }))
-                    }
+                    options={["active", "inactive"]}
+                    onChange={(v) => setForm(p => ({ ...p, status: v }))}
+                  />
+                </section>
+
+                {/* PRIVATE */}
+                <section className="space-y-4">
+                  <h3 className="text-sm font-bold text-slate-900">Private Information</h3>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <Input label="NIK" value={form.nik}
+                      onChange={(v) => setForm(p => ({ ...p, nik: v }))} />
+                    <Input label="NPWP" value={form.npwp}
+                      onChange={(v) => setForm(p => ({ ...p, npwp: v }))} />
+                    <Input label="Phone" value={form.phone} full
+                      onChange={(v) => setForm(p => ({ ...p, phone: v }))} />
+                    <Textarea label="Address" value={form.address}
+                      onChange={(v) => setForm(p => ({ ...p, address: v }))} />
+                  </div>
+                </section>
+
+                {/* BANK */}
+                <section className="space-y-4">
+                  <h3 className="text-sm font-bold text-slate-900">Bank Information</h3>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <Input label="Bank Name" value={form.bank_name}
+                      onChange={(v) => setForm(p => ({ ...p, bank_name: v }))} />
+                    <Input label="Account Name" value={form.bank_account_name}
+                      onChange={(v) => setForm(p => ({ ...p, bank_account_name: v }))} />
+                    <Input label="Account Number" value={form.bank_account_number} full
+                      onChange={(v) => setForm(p => ({ ...p, bank_account_number: v }))} />
+                  </div>
+                </section>
+
+                {/* ACTION */}
+                <div className="flex gap-3 pt-4">
+                  <Button
+                    type="submit"
+                    disabled={saving}
+                    className="rounded-2xl bg-gradient-to-r from-sky-600 to-indigo-600 text-white font-bold hover:brightness-110"
                   >
-                    <option value="active">active</option>
-                    <option value="inactive">inactive</option>
-                  </select>
+                    {saving ? "Saving..." : "Save Changes"}
+                  </Button>
+
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="rounded-2xl"
+                    onClick={() => nav("/employees")}
+                  >
+                    Cancel
+                  </Button>
                 </div>
-              </div>
+              </form>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
 
-              <hr />
+/* ===== Small reusable inputs ===== */
+function Input({ label, value, onChange, required, full }) {
+  return (
+    <div className={full ? "md:col-span-2 space-y-1" : "space-y-1"}>
+      <label className="text-xs font-medium text-slate-600">{label}</label>
+      <input
+        className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-sky-300 focus:ring-4 focus:ring-sky-200/40"
+        value={value}
+        required={required}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </div>
+  );
+}
 
-              {/* Private */}
-              <div className="space-y-2">
-                <div className="text-sm font-semibold">Private Info</div>
+function Textarea({ label, value, onChange }) {
+  return (
+    <div className="md:col-span-2 space-y-1">
+      <label className="text-xs font-medium text-slate-600">{label}</label>
+      <textarea
+        rows={3}
+        className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-sky-300 focus:ring-4 focus:ring-sky-200/40"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </div>
+  );
+}
 
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1">
-                    <label className="text-sm">NIK</label>
-                    <input
-                      className="w-full rounded-md border px-3 py-2"
-                      value={form.nik}
-                      onChange={(e) =>
-                        setForm((p) => ({ ...p, nik: e.target.value }))
-                      }
-                      placeholder="Optional"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-sm">NPWP</label>
-                    <input
-                      className="w-full rounded-md border px-3 py-2"
-                      value={form.npwp}
-                      onChange={(e) =>
-                        setForm((p) => ({ ...p, npwp: e.target.value }))
-                      }
-                      placeholder="Optional"
-                    />
-                  </div>
-
-                  <div className="space-y-1 col-span-2">
-                    <label className="text-sm">Phone</label>
-                    <input
-                      className="w-full rounded-md border px-3 py-2"
-                      value={form.phone}
-                      onChange={(e) =>
-                        setForm((p) => ({ ...p, phone: e.target.value }))
-                      }
-                      placeholder="Optional"
-                    />
-                  </div>
-
-                  <div className="space-y-1 col-span-2">
-                    <label className="text-sm">Address</label>
-                    <textarea
-                      className="w-full rounded-md border px-3 py-2"
-                      rows={3}
-                      value={form.address}
-                      onChange={(e) =>
-                        setForm((p) => ({ ...p, address: e.target.value }))
-                      }
-                      placeholder="Optional"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <hr />
-
-              {/* Bank */}
-              <div className="space-y-2">
-                <div className="text-sm font-semibold">Bank Info</div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1">
-                    <label className="text-sm">Bank Name</label>
-                    <input
-                      className="w-full rounded-md border px-3 py-2"
-                      value={form.bank_name}
-                      onChange={(e) =>
-                        setForm((p) => ({ ...p, bank_name: e.target.value }))
-                      }
-                      placeholder="Optional"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-sm">Bank Account Name</label>
-                    <input
-                      className="w-full rounded-md border px-3 py-2"
-                      value={form.bank_account_name}
-                      onChange={(e) =>
-                        setForm((p) => ({
-                          ...p,
-                          bank_account_name: e.target.value,
-                        }))
-                      }
-                      placeholder="Optional"
-                    />
-                  </div>
-
-                  <div className="space-y-1 col-span-2">
-                    <label className="text-sm">Bank Account Number</label>
-                    <input
-                      className="w-full rounded-md border px-3 py-2"
-                      value={form.bank_account_number}
-                      onChange={(e) =>
-                        setForm((p) => ({
-                          ...p,
-                          bank_account_number: e.target.value,
-                        }))
-                      }
-                      placeholder="Optional"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex gap-2">
-                <Button type="submit" disabled={saving}>
-                  {saving ? "Saving..." : "Save Changes"}
-                </Button>
-                <Button type="button" variant="outline" onClick={() => nav("/employees")}>
-                  Cancel
-                </Button>
-              </div>
-            </form>
-          )}
-        </CardContent>
-      </Card>
+function Select({ label, value, options, onChange }) {
+  return (
+    <div className="space-y-1">
+      <label className="text-xs font-medium text-slate-600">{label}</label>
+      <select
+        className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm focus:border-indigo-300 focus:ring-4 focus:ring-indigo-200/40"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {options.map((o) => (
+          <option key={o} value={o}>{o}</option>
+        ))}
+      </select>
     </div>
   );
 }

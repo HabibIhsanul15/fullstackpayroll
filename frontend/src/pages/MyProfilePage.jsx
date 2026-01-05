@@ -1,49 +1,138 @@
-import { useEffect, useState } from "react";
-import { fetchMeEmployee, updateMeEmployee } from "@/lib/meApi";
-import { getUser, updateAuthUser } from "@/lib/auth";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { getUser, updateAuthUser } from "@/lib/auth";
+import {
+  fetchMe,
+  fetchMeEmployee,
+  updateMeEmployee,
+  updateMe,
+  updatePassword,
+} from "@/lib/meApi";
 
+const EMPTY_EMP_FORM = {
+  name: "",
+  phone: "",
+  address: "",
+  nik: "",
+  npwp: "",
+  bank_name: "",
+  bank_account_name: "",
+  bank_account_number: "",
+};
+
+const EMPTY_META = {
+  employee_code: "",
+  department: "",
+  position: "",
+  status: "",
+};
 
 export default function MyProfilePage() {
-  const user = getUser();
-  const isStaff = user?.role === "staff" || user?.role === "employee";
+  const authUser = getUser();
+  const role = authUser?.role || "";
+  const isStaff = role === "staff" || role === "employee";
 
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState("");
-  const [ok, setOk] = useState("");
+  // ===== ACCOUNT (ALL ROLES) =====
+  const [accLoading, setAccLoading] = useState(true);
+  const [accSaving, setAccSaving] = useState(false);
+  const [accErr, setAccErr] = useState("");
+  const [accOk, setAccOk] = useState("");
 
-  const [form, setForm] = useState({
-    name: "",
-    phone: "",
-    address: "",
-    nik: "",
-    npwp: "",
-    bank_name: "",
-    bank_account_name: "",
-    bank_account_number: "",
+  const [account, setAccount] = useState({
+    name: authUser?.name || "",
+    email: authUser?.email || "",
+    role: role || "",
+  });
+  const [accountInitial, setAccountInitial] = useState(null);
+  const [accEditing, setAccEditing] = useState(false);
+
+  const accDirty = useMemo(() => {
+    if (!accountInitial) return false;
+    return accountInitial.name !== account.name;
+  }, [account, accountInitial]);
+
+  // ===== PASSWORD (ALL ROLES) =====
+  const [pwSaving, setPwSaving] = useState(false);
+  const [pwErr, setPwErr] = useState("");
+  const [pwOk, setPwOk] = useState("");
+
+  // ✅ FIX: field sesuai backend Laravel (password + password_confirmation)
+  const [pwForm, setPwForm] = useState({
+    current_password: "",
+    password: "",
+    password_confirmation: "",
   });
 
-  const [meta, setMeta] = useState({
-    employee_code: "",
-    department: "",
-    position: "",
-    status: "",
-  });
+  // ===== EMPLOYEE PROFILE (STAFF ONLY) =====
+  const [empLoading, setEmpLoading] = useState(isStaff);
+  const [empSaving, setEmpSaving] = useState(false);
+  const [empErr, setEmpErr] = useState("");
+  const [empOk, setEmpOk] = useState("");
 
+  const [isEditingEmp, setIsEditingEmp] = useState(false);
+  const [empInitialForm, setEmpInitialForm] = useState(null);
+
+  const [empForm, setEmpForm] = useState(EMPTY_EMP_FORM);
+  const [meta, setMeta] = useState(EMPTY_META);
+
+  const empDirty = useMemo(() => {
+    if (!empInitialForm) return false;
+    return JSON.stringify(empInitialForm) !== JSON.stringify(empForm);
+  }, [empForm, empInitialForm]);
+
+  // ===== LOAD ME (account) =====
   useEffect(() => {
     let mounted = true;
 
-    // ✅ kalau bukan staff, tidak perlu fetch employee
+    (async () => {
+      setAccLoading(true);
+      setAccErr("");
+      setAccOk("");
+
+      try {
+        const me = await fetchMe();
+        if (!mounted) return;
+
+        const mapped = {
+          name: me?.name || "",
+          email: me?.email || "",
+          role: me?.role || "",
+        };
+
+        setAccount(mapped);
+        setAccountInitial({ ...mapped });
+
+        // sync localStorage user header
+        updateAuthUser({ name: mapped.name, email: mapped.email, role: mapped.role });
+      } catch (e) {
+        if (!mounted) return;
+        setAccErr(e?.message || "Gagal memuat akun.");
+      } finally {
+        if (!mounted) return;
+        setAccLoading(false);
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // ===== LOAD EMPLOYEE (staff only) =====
+  useEffect(() => {
+    let mounted = true;
     if (!isStaff) {
-      setLoading(false);
+      setEmpLoading(false);
       return;
     }
 
-    setLoading(true);
-    setErr("");
-    fetchMeEmployee()
-      .then((emp) => {
+    (async () => {
+      setEmpLoading(true);
+      setEmpErr("");
+      setEmpOk("");
+
+      try {
+        const emp = await fetchMeEmployee();
         if (!mounted) return;
 
         setMeta({
@@ -53,7 +142,7 @@ export default function MyProfilePage() {
           status: emp.status || "",
         });
 
-        setForm({
+        const mapped = {
           name: emp.name || "",
           phone: emp.phone || "",
           address: emp.address || "",
@@ -62,107 +151,352 @@ export default function MyProfilePage() {
           bank_name: emp.bank_name || "",
           bank_account_name: emp.bank_account_name || "",
           bank_account_number: emp.bank_account_number || "",
-        });
-      })
-      .catch((e) => mounted && setErr(e.message))
-      .finally(() => mounted && setLoading(false));
+        };
 
-    return () => (mounted = false);
+        setEmpForm(mapped);
+        setEmpInitialForm({ ...mapped });
+        setIsEditingEmp(false);
+      } catch (e) {
+        if (!mounted) return;
+        setEmpErr(e?.message || "Gagal memuat profil karyawan.");
+      } finally {
+        if (!mounted) return;
+        setEmpLoading(false);
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
   }, [isStaff]);
 
-  const onChange = (k) => (e) => setForm((p) => ({ ...p, [k]: e.target.value }));
+  // ===== HANDLERS =====
+  const onChangeAccount = (k) => (e) => setAccount((p) => ({ ...p, [k]: e.target.value }));
 
-  const onSave = async () => {
-    setErr("");
-    setOk("");
-    setSaving(true);
+  const onSaveAccount = async () => {
+    if (!accEditing) return;
+
+    setAccErr("");
+    setAccOk("");
+
+    if (!accDirty) {
+      setAccEditing(false);
+      return;
+    }
+
+    setAccSaving(true);
     try {
-      const res = await updateMeEmployee(form);
+      const res = await updateMe({ name: account.name });
 
-      // ✅ bikin header langsung ikut berubah (instant)
-      updateAuthUser({ name: form.name });
+      const newName = res?.user?.name ?? res?.name ?? account.name;
+      const newEmail = res?.user?.email ?? res?.email ?? account.email;
+      const newRole = res?.user?.role ?? res?.role ?? account.role;
 
-      // ✅ optional: sinkron dari backend biar paling akurat
-      try {
-        const me = await api("/me"); // api.js kamu auto jadi /api/me
-        updateAuthUser({ name: me?.name, role: me?.role });
-      } catch {}
+      const mapped = { name: newName, email: newEmail, role: newRole };
+      setAccount(mapped);
+      setAccountInitial({ ...mapped });
+      setAccEditing(false);
 
-      setOk(res?.message || "Berhasil disimpan.");
+      updateAuthUser({ name: mapped.name, email: mapped.email, role: mapped.role });
+      setAccOk(res?.message || "Akun berhasil diperbarui.");
     } catch (e) {
-      setErr(e.message);
+      setAccErr(e?.message || "Gagal menyimpan akun.");
     } finally {
-      setSaving(false);
+      setAccSaving(false);
     }
   };
 
+  const onCancelAccount = () => {
+    setAccErr("");
+    setAccOk("");
+    setAccEditing(false);
+    if (accountInitial) setAccount({ ...accountInitial });
+  };
 
-  if (loading) return <div className="p-4">Loading profil...</div>;
+  const onChangePw = (k) => (e) => setPwForm((p) => ({ ...p, [k]: e.target.value }));
 
-  // ✅ Tampilan untuk FAT/Direktur
-  if (!isStaff) {
+  const onSavePassword = async () => {
+    setPwErr("");
+    setPwOk("");
+
+    if (!pwForm.current_password) return setPwErr("Password saat ini wajib diisi.");
+    if (!pwForm.password) return setPwErr("Password baru wajib diisi.");
+    if (pwForm.password.length < 8) return setPwErr("Password baru minimal 8 karakter.");
+    if (pwForm.password !== pwForm.password_confirmation) {
+      return setPwErr("Konfirmasi password tidak sama.");
+    }
+
+    setPwSaving(true);
+    try {
+      // ✅ FIX: payload sesuai backend (password + password_confirmation)
+      const res = await updatePassword({
+        current_password: pwForm.current_password,
+        password: pwForm.password,
+        password_confirmation: pwForm.password_confirmation,
+      });
+
+      setPwOk(res?.message || "Password berhasil diubah.");
+      setPwForm({
+        current_password: "",
+        password: "",
+        password_confirmation: "",
+      });
+    } catch (e) {
+      setPwErr(e?.message || "Gagal mengubah password.");
+    } finally {
+      setPwSaving(false);
+    }
+  };
+
+  const onChangeEmp = (k) => (e) => setEmpForm((p) => ({ ...p, [k]: e.target.value }));
+
+  const onSaveEmp = async () => {
+    if (!isEditingEmp) return;
+
+    setEmpErr("");
+    setEmpOk("");
+
+    if (!empDirty) {
+      setIsEditingEmp(false);
+      return;
+    }
+
+    setEmpSaving(true);
+    try {
+      const res = await updateMeEmployee(empForm);
+
+      if (empForm.name) updateAuthUser({ name: empForm.name });
+
+      setEmpOk(res?.message || "Profil berhasil disimpan.");
+      setEmpInitialForm({ ...empForm });
+      setIsEditingEmp(false);
+    } catch (e) {
+      setEmpErr(e?.message || "Gagal menyimpan profil.");
+    } finally {
+      setEmpSaving(false);
+    }
+  };
+
+  const onCancelEmp = () => {
+    setEmpErr("");
+    setEmpOk("");
+    setIsEditingEmp(false);
+    if (empInitialForm) setEmpForm({ ...empInitialForm });
+  };
+
+  // ===== LOADING GLOBAL =====
+  if (accLoading || (isStaff && empLoading)) {
     return (
-      <div className="p-4 space-y-3 max-w-3xl">
-        <h1 className="text-2xl font-semibold">My Profile</h1>
-        <p className="text-sm text-muted-foreground">
-          Halaman ini menampilkan informasi akun yang sedang login.
-        </p>
-
-        <div className="rounded-lg border p-4 space-y-3">
-          <Field label="Nama" value={user?.name} />
-          <Field label="Role" value={user?.role} />
-          <Field label="Email" value={user?.email ?? "-"} />
-        </div>
-
-        <div className="text-sm text-muted-foreground">
-          Untuk role <b>{user?.role}</b>, data pegawai (NIK/Bank/NPWP) tidak perlu diisi.
-        </div>
+      <div className="rounded-3xl border border-slate-200 bg-white/75 backdrop-blur shadow-[0_16px_50px_rgba(2,6,23,0.06)] p-6">
+        <div className="text-sm text-slate-600">Loading profil...</div>
       </div>
     );
   }
 
-  // ✅ Tampilan untuk Staff (form employee)
   return (
-    <div className="p-4 space-y-4 max-w-4xl">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div>
-          <h1 className="text-2xl font-semibold">My Profile</h1>
-          <p className="text-sm text-muted-foreground">
-            Lengkapi data pribadi & rekening untuk kebutuhan slip gaji.
-          </p>
-        </div>
-        <Button onClick={onSave} disabled={saving}>
-          {saving ? "Menyimpan..." : "Simpan"}
-        </Button>
+    <div className="space-y-4">
+      {/* HEADER */}
+      <div className="rounded-3xl border border-slate-200 bg-white/75 backdrop-blur shadow-[0_16px_50px_rgba(2,6,23,0.06)] p-7">
+        <h1 className="text-3xl font-black tracking-tight text-slate-900">My Profile</h1>
+        <p className="mt-1 text-sm text-slate-600">
+          Kelola informasi akun dan keamanan.{" "}
+          {isStaff ? "Data karyawan bisa diubah lewat Edit." : "Untuk admin, fokus di akun & password."}
+        </p>
       </div>
 
-      {err && <div className="text-sm text-red-600">{err}</div>}
-      {ok && <div className="text-sm text-green-700">{ok}</div>}
+      {/* ACCOUNT SETTINGS (ALL ROLES) */}
+      <div className="rounded-3xl border border-slate-200 bg-white/75 backdrop-blur shadow-[0_16px_50px_rgba(2,6,23,0.06)] p-7">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <div className="text-sm font-semibold text-slate-900">Account Settings</div>
+            <div className="mt-1 text-sm text-slate-600">
+              {accEditing ? "Mode edit aktif. Ubah nama lalu simpan." : "Lihat info akun. Klik Edit untuk mengubah nama."}
+            </div>
+          </div>
 
-      <div className="rounded-lg border p-4 space-y-3">
-        <div className="font-semibold">Info Karyawan (read-only)</div>
-        <div className="grid md:grid-cols-4 gap-3">
-          <Field label="Employee Code" value={meta.employee_code} />
-          <Field label="Department" value={meta.department} />
-          <Field label="Position" value={meta.position} />
-          <Field label="Status" value={meta.status || "-"} />
+          {!accEditing ? (
+            <Button
+              onClick={() => {
+                setAccErr("");
+                setAccOk("");
+                setAccEditing(true);
+              }}
+              className="rounded-2xl bg-gradient-to-r from-sky-600 to-indigo-600 text-white font-extrabold hover:brightness-110"
+            >
+              Edit
+            </Button>
+          ) : (
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={onCancelAccount} disabled={accSaving} className="rounded-2xl font-extrabold">
+                Cancel
+              </Button>
+
+              <Button
+                onClick={onSaveAccount}
+                disabled={accSaving || !accDirty}
+                className="rounded-2xl bg-gradient-to-r from-sky-600 to-indigo-600 text-white font-extrabold hover:brightness-110"
+              >
+                {accSaving ? "Menyimpan..." : "Simpan"}
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {accErr && (
+          <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+            {accErr}
+          </div>
+        )}
+        {accOk && (
+          <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+            {accOk}
+          </div>
+        )}
+
+        <div className="mt-5 grid md:grid-cols-3 gap-5">
+          <Input label="Nama" value={account.name} onChange={onChangeAccount("name")} disabled={!accEditing} />
+          <Input label="Email" value={account.email} disabled />
+          <Input label="Role" value={account.role} disabled />
         </div>
       </div>
 
-      <div className="rounded-lg border p-4 space-y-4">
-        <div className="font-semibold">Private / Sensitive Info</div>
+      {/* PASSWORD SETTINGS (ALL ROLES) */}
+      <div className="rounded-3xl border border-slate-200 bg-white/75 backdrop-blur shadow-[0_16px_50px_rgba(2,6,23,0.06)] p-7">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <div className="text-sm font-semibold text-slate-900">Security</div>
+            <div className="mt-1 text-sm text-slate-600">Disarankan ganti password secara berkala.</div>
+          </div>
 
-        <div className="grid md:grid-cols-2 gap-4">
-          <Input label="Nama" value={form.name} onChange={onChange("name")} />
-          <Input label="Phone" value={form.phone} onChange={onChange("phone")} />
-          <Input label="NIK" value={form.nik} onChange={onChange("nik")} />
-          <Input label="NPWP" value={form.npwp} onChange={onChange("npwp")} />
-          <Input label="Bank Name" value={form.bank_name} onChange={onChange("bank_name")} />
-          <Input label="Bank Account Name" value={form.bank_account_name} onChange={onChange("bank_account_name")} />
-          <Input label="Bank Account Number" value={form.bank_account_number} onChange={onChange("bank_account_number")} />
-          <Textarea label="Address" value={form.address} onChange={onChange("address")} />
+          <Button
+            onClick={onSavePassword}
+            disabled={pwSaving}
+            className="rounded-2xl bg-slate-900 text-white font-extrabold hover:bg-slate-800"
+          >
+            {pwSaving ? "Menyimpan..." : "Update Password"}
+          </Button>
+        </div>
+
+        {pwErr && (
+          <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+            {pwErr}
+          </div>
+        )}
+        {pwOk && (
+          <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+            {pwOk}
+          </div>
+        )}
+
+        <div className="mt-5 grid md:grid-cols-3 gap-5">
+          <Input
+            type="password"
+            label="Current Password"
+            value={pwForm.current_password}
+            onChange={onChangePw("current_password")}
+            placeholder="Password saat ini"
+          />
+          <Input
+            type="password"
+            label="New Password"
+            value={pwForm.password}
+            onChange={onChangePw("password")}
+            placeholder="Minimal 8 karakter"
+          />
+          <Input
+            type="password"
+            label="Confirm New Password"
+            value={pwForm.password_confirmation}
+            onChange={onChangePw("password_confirmation")}
+            placeholder="Ulangi password baru"
+          />
         </div>
       </div>
+
+      {/* EMPLOYEE SECTION (STAFF ONLY) */}
+      {isStaff && (
+        <>
+          <div className="rounded-3xl border border-slate-200 bg-white/75 backdrop-blur shadow-[0_16px_50px_rgba(2,6,23,0.06)] p-7">
+            <div className="text-sm font-semibold text-slate-900">Info Karyawan (read-only)</div>
+            <div className="mt-4 grid md:grid-cols-4 gap-6">
+              <Field label="Employee Code" value={meta.employee_code} />
+              <Field label="Department" value={meta.department} />
+              <Field label="Position" value={meta.position} />
+              <Field label="Status" value={meta.status || "-"} />
+            </div>
+          </div>
+
+          <div className="rounded-3xl border border-slate-200 bg-white/75 backdrop-blur shadow-[0_16px_50px_rgba(2,6,23,0.06)] p-7">
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+              <div>
+                <div className="text-sm font-semibold text-slate-900">Private / Sensitive Info</div>
+                <div className="mt-1 text-sm text-slate-600">
+                  {isEditingEmp ? "Mode edit aktif. Ubah data lalu simpan." : "Lihat data pribadi & rekening. Klik Edit untuk mengubah."}
+                </div>
+              </div>
+
+              {!isEditingEmp ? (
+                <Button
+                  onClick={() => {
+                    setEmpErr("");
+                    setEmpOk("");
+                    setIsEditingEmp(true);
+                  }}
+                  className="rounded-2xl bg-gradient-to-r from-sky-600 to-indigo-600 text-white font-extrabold hover:brightness-110"
+                >
+                  Edit
+                </Button>
+              ) : (
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={onCancelEmp} disabled={empSaving} className="rounded-2xl font-extrabold">
+                    Cancel
+                  </Button>
+
+                  <Button
+                    onClick={onSaveEmp}
+                    disabled={empSaving || !empDirty}
+                    className="rounded-2xl bg-gradient-to-r from-sky-600 to-indigo-600 text-white font-extrabold hover:brightness-110"
+                  >
+                    {empSaving ? "Menyimpan..." : "Simpan"}
+                  </Button>
+                </div>
+              )}
+            </div>
+
+            {empErr && (
+              <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                {empErr}
+              </div>
+            )}
+            {empOk && (
+              <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                {empOk}
+              </div>
+            )}
+
+            <div className="mt-5 grid md:grid-cols-2 gap-5">
+              <Input label="Nama" value={empForm.name} onChange={onChangeEmp("name")} disabled={!isEditingEmp} />
+              <Input label="Phone" value={empForm.phone} onChange={onChangeEmp("phone")} disabled={!isEditingEmp} />
+              <Input label="NIK" value={empForm.nik} onChange={onChangeEmp("nik")} disabled={!isEditingEmp} />
+              <Input label="NPWP" value={empForm.npwp} onChange={onChangeEmp("npwp")} disabled={!isEditingEmp} />
+              <Input label="Bank Name" value={empForm.bank_name} onChange={onChangeEmp("bank_name")} disabled={!isEditingEmp} />
+              <Input
+                label="Bank Account Name"
+                value={empForm.bank_account_name}
+                onChange={onChangeEmp("bank_account_name")}
+                disabled={!isEditingEmp}
+              />
+              <Input
+                label="Bank Account Number"
+                value={empForm.bank_account_number}
+                onChange={onChangeEmp("bank_account_number")}
+                disabled={!isEditingEmp}
+              />
+              <Textarea label="Address" value={empForm.address} onChange={onChangeEmp("address")} disabled={!isEditingEmp} />
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -170,26 +504,41 @@ export default function MyProfilePage() {
 function Field({ label, value }) {
   return (
     <div className="space-y-1">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="font-medium">{value ?? "-"}</div>
+      <div className="text-xs text-slate-500">{label}</div>
+      <div className="font-semibold text-slate-900">{value ?? "-"}</div>
     </div>
   );
 }
 
 function Input({ label, ...props }) {
   return (
-    <div className="space-y-1">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <input {...props} className="w-full rounded-md border px-3 py-2 text-sm" />
+    <div className="space-y-2">
+      <div className="text-xs font-semibold text-slate-700">{label}</div>
+      <input
+        {...props}
+        className={[
+          "w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition",
+          "focus:border-sky-300 focus:ring-4 focus:ring-sky-200/40",
+          props.disabled ? "opacity-70 cursor-not-allowed bg-slate-50" : "",
+        ].join(" ")}
+      />
     </div>
   );
 }
 
 function Textarea({ label, ...props }) {
   return (
-    <div className="space-y-1 md:col-span-2">
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <textarea {...props} rows={4} className="w-full rounded-md border px-3 py-2 text-sm" />
+    <div className="space-y-2 md:col-span-2">
+      <div className="text-xs font-semibold text-slate-700">{label}</div>
+      <textarea
+        {...props}
+        rows={4}
+        className={[
+          "w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition",
+          "focus:border-sky-300 focus:ring-4 focus:ring-sky-200/40",
+          props.disabled ? "opacity-70 cursor-not-allowed bg-slate-50" : "",
+        ].join(" ")}
+      />
     </div>
   );
 }

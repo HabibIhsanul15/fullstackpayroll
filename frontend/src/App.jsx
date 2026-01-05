@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { useEffect, useState } from "react";
 import { isAuthed } from "./lib/auth";
 
 import ProtectedRoute from "./components/ProtectedRoute";
@@ -19,23 +20,33 @@ import SalaryProfileCreatePage from "./pages/SalaryProfileCreatePage";
 
 import MyProfilePage from "./pages/MyProfilePage";
 
+// ✅ ADD THIS
+import AccountCreatePage from "./pages/AccountCreatePage";
+
 export default function App() {
-  const authed = isAuthed();
+  const [authed, setAuthed] = useState(() => isAuthed());
+
+  useEffect(() => {
+    const sync = () => setAuthed(isAuthed());
+    window.addEventListener("auth:changed", sync);
+    window.addEventListener("storage", sync);
+    return () => {
+      window.removeEventListener("auth:changed", sync);
+      window.removeEventListener("storage", sync);
+    };
+  }, []);
 
   return (
     <BrowserRouter>
       <Routes>
-        {/* ✅ ROOT */}
+        {/* ROOT */}
         <Route path="/" element={<Navigate to={authed ? "/payrolls" : "/login"} replace />} />
 
-        {/* ✅ PUBLIC (kalau sudah login, lempar ke /payrolls) */}
+        {/* PUBLIC */}
         <Route path="/login" element={authed ? <Navigate to="/payrolls" replace /> : <Login />} />
-        <Route
-          path="/register"
-          element={authed ? <Navigate to="/payrolls" replace /> : <Register />}
-        />
+        <Route path="/register" element={authed ? <Navigate to="/payrolls" replace /> : <Register />} />
 
-        {/* ✅ PROTECTED + LAYOUT */}
+        {/* PROTECTED + LAYOUT */}
         <Route
           element={
             <ProtectedRoute>
@@ -53,16 +64,16 @@ export default function App() {
           <Route path="/employees" element={<EmployeesPage />} />
           <Route path="/employees/new" element={<EmployeeCreatePage />} />
           <Route path="/employees/:id/edit" element={<EmployeeEditPage />} />
-          <Route
-            path="/employees/:id/salary-profile/new"
-            element={<SalaryProfileCreatePage />}
-          />
+          <Route path="/employees/:id/salary-profile/new" element={<SalaryProfileCreatePage />} />
+
+          {/* ✅ Create Account */}
+          <Route path="/accounts/create" element={<AccountCreatePage />} />
 
           {/* My Profile */}
           <Route path="/my-profile" element={<MyProfilePage />} />
         </Route>
 
-        {/* ✅ FALLBACK PALING BAWAH */}
+        {/* FALLBACK */}
         <Route path="*" element={<Navigate to={authed ? "/payrolls" : "/login"} replace />} />
       </Routes>
     </BrowserRouter>

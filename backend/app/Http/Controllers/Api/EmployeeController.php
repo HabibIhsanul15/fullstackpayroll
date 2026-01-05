@@ -7,6 +7,9 @@ use App\Models\Employee;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
+
 
 class EmployeeController extends Controller
 {
@@ -66,6 +69,52 @@ class EmployeeController extends Controller
 
         return response()->json($base);
     }
+
+public function createUser(Request $request, Employee $employee)
+{
+    $actor = $request->user();
+
+    // ✅ hanya FAT/Direktur boleh bikin akun
+    if (!in_array($actor->role, ['fat', 'director'], true)) {
+        return response()->json(['message' => 'Forbidden'], 403);
+    }
+
+    // ✅ employee sudah punya akun?
+    if ($employee->user_id) {
+        return response()->json(['message' => 'Employee ini sudah punya akun.'], 422);
+    }
+
+    // ✅ validasi mirip register
+    $data = $request->validate([
+        'name' => ['required', 'string', 'max:255'],
+        'email' => ['required', 'email', 'max:255', 'unique:users,email'],
+        'role' => ['required', Rule::in(['fat', 'director'])],
+
+        // ✅ password input manual
+        'password' => ['required', 'string', 'min:8', 'confirmed'],
+        // confirmed -> butuh field password_confirmation
+    ]);
+
+    $user = User::create([
+        'name' => $data['name'],
+        'email' => $data['email'],
+        'role' => $data['role'],
+        'password' => Hash::make($data['password']),
+    ]);
+
+    // link ke employee
+    $employee->update(['user_id' => $user->id]);
+
+    return response()->json([
+        'message' => 'Akun berhasil dibuat.',
+        'user' => [
+            'id' => $user->id,
+            'name' => $user->name,
+            'email' => $user->email,
+            'role' => $user->role,
+        ],
+    ], 201);
+}
 
     public function salaryProfile(Request $request, Employee $employee)
     {

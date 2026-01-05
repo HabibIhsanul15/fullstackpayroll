@@ -5,6 +5,8 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Employee;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\ValidationException;
 
 class MeController extends Controller
 {
@@ -12,7 +14,6 @@ class MeController extends Controller
     {
         $u = $request->user();
 
-        // optional: kasih ringkas info employee kalau ada
         $emp = Employee::where('user_id', $u->id)->first();
 
         return response()->json([
@@ -29,11 +30,12 @@ class MeController extends Controller
 
     private function resolveEmployee($u): ?Employee
     {
-        // ✅ relasi yang benar di DB kamu:
-        // employees.user_id -> users.id
         return Employee::where('user_id', $u->id)->first();
     }
 
+    // =========================
+    // STAFF EMPLOYEE PROFILE
+    // =========================
     public function employee(Request $request)
     {
         $u = $request->user();
@@ -65,7 +67,6 @@ class MeController extends Controller
             return response()->json(['message' => 'Akun ini belum terhubung ke data employee.'], 404);
         }
 
-        // staff hanya boleh update data pribadi/sensitif
         $data = $request->validate([
             'name' => ['sometimes', 'string', 'max:255'],
             'phone' => ['sometimes', 'nullable', 'string', 'max:30'],
@@ -81,7 +82,7 @@ class MeController extends Controller
 
         $emp->update($data);
 
-        // ✅ sinkron nama user juga supaya header (user.name) ikut berubah
+        // sync nama user
         if (array_key_exists('name', $data)) {
             $u->update(['name' => $data['name']]);
         }
@@ -89,6 +90,59 @@ class MeController extends Controller
         return response()->json([
             'message' => 'Profil berhasil diperbarui.',
             'data' => $emp->fresh(),
+        ]);
+    }
+
+    // =========================
+    // USER PROFILE (ALL ROLES)
+    // =========================
+    public function updateMe(Request $request)
+    {
+        $u = $request->user();
+
+        $data = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+        ]);
+
+        $u->update([
+            'name' => $data['name'],
+        ]);
+
+        return response()->json([
+            'message' => 'Nama berhasil diperbarui.',
+            'user' => [
+                'id' => $u->id,
+                'name' => $u->name,
+                'email' => $u->email,
+                'role' => $u->role,
+            ],
+        ]);
+    }
+
+    public function updatePassword(Request $request)
+    {
+        $u = $request->user();
+
+        $data = $request->validate([
+            'current_password' => ['required', 'string'],
+            'password' => ['required', 'string', 'min:8', 'confirmed'],
+        ]);
+
+        if (!Hash::check($data['current_password'], $u->password)) {
+            throw ValidationException::withMessages([
+                'current_password' => ['Password lama tidak sesuai.'],
+            ]);
+        }
+
+        $u->update([
+            'password' => Hash::make($data['password']),
+        ]);
+
+        // optional: logout semua device
+        // $u->tokens()->delete();
+
+        return response()->json([
+            'message' => 'Password berhasil diperbarui.',
         ]);
     }
 }

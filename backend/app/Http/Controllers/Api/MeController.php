@@ -7,6 +7,7 @@ use App\Models\Employee;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\ValidationException;
+use App\Services\CryptoService;
 
 class MeController extends Controller
 {
@@ -50,6 +51,29 @@ class MeController extends Controller
             return response()->json(['message' => 'Akun ini belum terhubung ke data employee.'], 404);
         }
 
+        // ✅ decrypt kalau tersedia, fallback ke plaintext (mode transisi)
+        $emp->nik = $emp->nik_enc ? CryptoService::decryptAESGCM($emp->nik_enc) : $emp->nik;
+        $emp->npwp = $emp->npwp_enc ? CryptoService::decryptAESGCM($emp->npwp_enc) : $emp->npwp;
+
+        $emp->bank_account_number = $emp->bank_account_number_enc
+            ? CryptoService::decryptAESGCM($emp->bank_account_number_enc)
+            : $emp->bank_account_number;
+
+        // opsional kalau kamu ikut encrypt phone & address
+        $emp->phone = $emp->phone_enc ? CryptoService::decryptAESGCM($emp->phone_enc) : $emp->phone;
+        $emp->address = $emp->address_enc ? CryptoService::decryptAESGCM($emp->address_enc) : $emp->address;
+
+        // ✅ jangan kirim ciphertext ke frontend
+        unset(
+            $emp->nik_enc,
+            $emp->npwp_enc,
+            $emp->bank_account_number_enc,
+            $emp->phone_enc,
+            $emp->address_enc,
+            $emp->pii_alg,
+            $emp->pii_key_id
+        );
+
         return response()->json($emp);
     }
 
@@ -80,6 +104,35 @@ class MeController extends Controller
             'bank_account_number' => ['sometimes', 'nullable', 'string', 'max:50'],
         ]);
 
+        // ✅ ENCRYPT hanya field yang memang ikut dikirim
+        if (array_key_exists('nik', $data)) {
+            $data['nik_enc'] = !empty($data['nik']) ? CryptoService::encryptAESGCM((string)$data['nik']) : null;
+        }
+
+        if (array_key_exists('npwp', $data)) {
+            $data['npwp_enc'] = !empty($data['npwp']) ? CryptoService::encryptAESGCM((string)$data['npwp']) : null;
+        }
+
+        if (array_key_exists('bank_account_number', $data)) {
+            $data['bank_account_number_enc'] = !empty($data['bank_account_number'])
+                ? CryptoService::encryptAESGCM((string)$data['bank_account_number'])
+                : null;
+        }
+
+        // opsional: kalau ikut encrypt phone & address
+        if (array_key_exists('phone', $data)) {
+            $data['phone_enc'] = !empty($data['phone']) ? CryptoService::encryptAESGCM((string)$data['phone']) : null;
+        }
+
+        if (array_key_exists('address', $data)) {
+            $data['address_enc'] = !empty($data['address']) ? CryptoService::encryptAESGCM((string)$data['address']) : null;
+        }
+
+        // metadata enkripsi
+        $data['pii_alg'] = 'AES';
+        $data['pii_key_id'] = CryptoService::keyId();
+
+        // ✅ baru update
         $emp->update($data);
 
         // sync nama user
@@ -87,9 +140,32 @@ class MeController extends Controller
             $u->update(['name' => $data['name']]);
         }
 
+        // ✅ response: balikin plaintext yang sudah didecrypt (biar FE tampil normal)
+        $fresh = $emp->fresh();
+
+        $fresh->nik = $fresh->nik_enc ? CryptoService::decryptAESGCM($fresh->nik_enc) : $fresh->nik;
+        $fresh->npwp = $fresh->npwp_enc ? CryptoService::decryptAESGCM($fresh->npwp_enc) : $fresh->npwp;
+
+        $fresh->bank_account_number = $fresh->bank_account_number_enc
+            ? CryptoService::decryptAESGCM($fresh->bank_account_number_enc)
+            : $fresh->bank_account_number;
+
+        $fresh->phone = $fresh->phone_enc ? CryptoService::decryptAESGCM($fresh->phone_enc) : $fresh->phone;
+        $fresh->address = $fresh->address_enc ? CryptoService::decryptAESGCM($fresh->address_enc) : $fresh->address;
+
+        unset(
+            $fresh->nik_enc,
+            $fresh->npwp_enc,
+            $fresh->bank_account_number_enc,
+            $fresh->phone_enc,
+            $fresh->address_enc,
+            $fresh->pii_alg,
+            $fresh->pii_key_id
+        );
+
         return response()->json([
             'message' => 'Profil berhasil diperbarui.',
-            'data' => $emp->fresh(),
+            'data' => $fresh,
         ]);
     }
 

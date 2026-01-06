@@ -55,10 +55,6 @@ Route::middleware('auth:sanctum')->group(function () {
     |--------------------------------------------------------------------------
     */
     Route::post('/admin/users', [AdminUserController::class, 'store']);
-    // ADMIN USERS (FAT / DIRECTOR)
-    Route::post('/admin/users', [AdminUserController::class, 'store']);
-
-
     /*
     |--------------------------------------------------------------------------
     | ME

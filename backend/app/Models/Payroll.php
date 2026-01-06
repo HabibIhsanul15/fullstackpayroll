@@ -10,12 +10,33 @@ class Payroll extends Model
         'user_id',
         'employee_id',
         'periode',
+
+        // plaintext (transisi)
         'gaji_pokok',
         'tunjangan',
         'potongan',
         'total',
         'catatan',
+
+        // ciphertext
+        'gaji_pokok_enc',
+        'tunjangan_enc',
+        'potongan_enc',
+        'total_enc',
+        'catatan_enc',
+
+        // metadata enkripsi
+        'salary_alg',
+        'salary_key_id',
     ];
+
+    protected $hidden = [
+    'gaji_pokok_enc',
+    'tunjangan_enc',
+    'potongan_enc',
+    'total_enc',
+    'catatan_enc',
+];
 
     protected $casts = [
         'periode' => 'date',

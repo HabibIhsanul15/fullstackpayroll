@@ -8,7 +8,8 @@ use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Str;
+use App\Services\CryptoService;
+
 
 
 class EmployeeController extends Controller
@@ -55,13 +56,13 @@ class EmployeeController extends Controller
         // private info hanya untuk yang berhak
         if ($isPrivileged || $isOwner) {
             $base += [
-                'nik' => $employee->nik,
-                'npwp' => $employee->npwp,
-                'phone' => $employee->phone,
-                'address' => $employee->address,
-                'bank_name' => $employee->bank_name,
-                'bank_account_name' => $employee->bank_account_name,
-                'bank_account_number' => $employee->bank_account_number,
+            'nik' => $employee->nik_enc ? CryptoService::decryptAESGCM($employee->nik_enc) : $employee->nik,
+            'npwp' => $employee->npwp_enc ? CryptoService::decryptAESGCM($employee->npwp_enc) : $employee->npwp,
+            'phone' => $employee->phone_enc ? CryptoService::decryptAESGCM($employee->phone_enc) : $employee->phone,
+            'address' => $employee->address_enc ? CryptoService::decryptAESGCM($employee->address_enc) : $employee->address,
+            'bank_account_number' => $employee->bank_account_number_enc
+                ? CryptoService::decryptAESGCM($employee->bank_account_number_enc)
+                : $employee->bank_account_number,
             ];
         } else {
             $base['masked'] = true;
@@ -125,17 +126,21 @@ public function createUser(Request $request, Employee $employee)
             return response()->json(['message' => 'Salary profile not found'], 404);
         }
 
+        // prefer decrypt kalau ada ciphertext
+        $base = $profile->base_salary_enc ? (float) CryptoService::decryptAESGCM($profile->base_salary_enc) : (float) $profile->base_salary;
+        $allow = $profile->allowance_fixed_enc ? (float) CryptoService::decryptAESGCM($profile->allowance_fixed_enc) : (float) $profile->allowance_fixed;
+        $ded = $profile->deduction_fixed_enc ? (float) CryptoService::decryptAESGCM($profile->deduction_fixed_enc) : (float) $profile->deduction_fixed;
+
         return response()->json([
             'employee_id' => $employee->id,
             'effective_from' => $profile->effective_from->toDateString(),
-            'base_salary' => (string) $profile->base_salary,
-            'allowance_fixed' => (string) $profile->allowance_fixed,
-            'deduction_fixed' => (string) $profile->deduction_fixed,
-            'suggested_total' => (string) (
-                $profile->base_salary + $profile->allowance_fixed - $profile->deduction_fixed
-            ),
+            'base_salary' => (string) $base,
+            'allowance_fixed' => (string) $allow,
+            'deduction_fixed' => (string) $ded,
+            'suggested_total' => (string) ($base + $allow - $ded),
         ]);
     }
+
 
     public function store(Request $request)
     {
@@ -173,33 +178,53 @@ public function createUser(Request $request, Employee $employee)
         ], 201);
     }
 
-    public function storeSalaryProfile(Request $request, Employee $employee)
-    {
-        $data = $request->validate([
-            'base_salary' => ['required', 'numeric', 'min:0'],
-            'allowance_fixed' => ['nullable', 'numeric', 'min:0'],
-            'deduction_fixed' => ['nullable', 'numeric', 'min:0'],
-            'effective_from' => ['required', 'date'],
+public function storeSalaryProfile(Request $request, Employee $employee)
+{
+    $data = $request->validate([
+        'base_salary' => ['required', 'numeric', 'min:0'],
+        'allowance_fixed' => ['nullable', 'numeric', 'min:0'],
+        'deduction_fixed' => ['nullable', 'numeric', 'min:0'],
+        'effective_from' => ['required', 'date'],
 
-            'daily_rate' => ['nullable', 'numeric', 'min:0'],
-            'overtime_rate_per_hour' => ['nullable', 'numeric', 'min:0'],
-            'late_penalty_per_minute' => ['nullable', 'numeric', 'min:0'],
-        ]);
+        'daily_rate' => ['nullable', 'numeric', 'min:0'],
+        'overtime_rate_per_hour' => ['nullable', 'numeric', 'min:0'],
+        'late_penalty_per_minute' => ['nullable', 'numeric', 'min:0'],
+    ]);
 
-        $profile = $employee->salaryProfiles()->create([
-            'base_salary' => $data['base_salary'],
-            'allowance_fixed' => $data['allowance_fixed'] ?? 0,
-            'deduction_fixed' => $data['deduction_fixed'] ?? 0,
-            'daily_rate' => $data['daily_rate'] ?? null,
-            'overtime_rate_per_hour' => $data['overtime_rate_per_hour'] ?? null,
-            'late_penalty_per_minute' => $data['late_penalty_per_minute'] ?? null,
-            'effective_from' => $data['effective_from'],
-        ]);
+    $base = (float) $data['base_salary'];
+    $allow = (float) ($data['allowance_fixed'] ?? 0);
+    $ded = (float) ($data['deduction_fixed'] ?? 0);
 
-        return response()->json([
-            'salary_profile' => $profile,
-        ], 201);
-    }
+    $daily = array_key_exists('daily_rate', $data) ? (float) ($data['daily_rate'] ?? 0) : null;
+    $ot    = array_key_exists('overtime_rate_per_hour', $data) ? (float) ($data['overtime_rate_per_hour'] ?? 0) : null;
+    $late  = array_key_exists('late_penalty_per_minute', $data) ? (float) ($data['late_penalty_per_minute'] ?? 0) : null;
+
+    $profile = $employee->salaryProfiles()->create([
+        // plaintext (transisi)
+        'base_salary' => $base,
+        'allowance_fixed' => $allow,
+        'deduction_fixed' => $ded,
+        'daily_rate' => $daily,
+        'overtime_rate_per_hour' => $ot,
+        'late_penalty_per_minute' => $late,
+        'effective_from' => $data['effective_from'],
+
+        // ciphertext
+        'base_salary_enc' => CryptoService::encryptAESGCM((string)$base),
+        'allowance_fixed_enc' => CryptoService::encryptAESGCM((string)$allow),
+        'deduction_fixed_enc' => CryptoService::encryptAESGCM((string)$ded),
+        'daily_rate_enc' => $daily !== null ? CryptoService::encryptAESGCM((string)$daily) : null,
+        'overtime_rate_per_hour_enc' => $ot !== null ? CryptoService::encryptAESGCM((string)$ot) : null,
+        'late_penalty_per_minute_enc' => $late !== null ? CryptoService::encryptAESGCM((string)$late) : null,
+
+        'salary_alg' => 'AES',
+        'salary_key_id' => CryptoService::keyId(),
+    ]);
+
+    return response()->json([
+        'salary_profile' => $profile,
+    ], 201);
+}
 
     public function update(Request $request, Employee $employee)
     {

@@ -14,14 +14,25 @@ class Employee extends Model
         'position',
         'status',
 
+        // plaintext (transisi)
         'nik',
         'npwp',
         'phone',
         'address',
-
         'bank_name',
         'bank_account_name',
         'bank_account_number',
+
+        // ciphertext
+        'nik_enc',
+        'npwp_enc',
+        'phone_enc',
+        'address_enc',
+        'bank_account_number_enc',
+
+        // metadata
+        'pii_alg',
+        'pii_key_id',
     ];
 
     public function payrolls()

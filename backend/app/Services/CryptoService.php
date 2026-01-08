@@ -4,6 +4,9 @@ namespace App\Services;
 
 use App\Exceptions\CryptoException;
 use RuntimeException;
+use App\Models\CryptoKey;
+use Illuminate\Support\Facades\Crypt;
+
 
 class CryptoService
 {
@@ -38,8 +41,6 @@ class CryptoService
     // =====================================================
     public static function salaryStorageMode(): string
     {
-        // butuh config/crypto.php
-        // return ['salary_storage_mode' => env('SALARY_STORAGE_MODE', 'TRANSITION')];
         return strtoupper((string) config('crypto.salary_storage_mode', 'TRANSITION'));
     }
 
@@ -61,8 +62,8 @@ class CryptoService
             'AES' => self::decryptAESGCM($payload),
 
             // nanti kamu tambah:
-            // 'RSA' => self::decryptRSA($payload),
-            // 'HYBRID' => self::decryptHybrid($payload),
+            'RSA' => self::decryptRSA($payload),
+            'HYBRID' => self::decryptHybrid($payload),
 
             default => throw new CryptoException("Decrypt not implemented for alg: {$alg}"),
         };
@@ -75,23 +76,24 @@ class CryptoService
      */
     public static function readEncryptedOrPlain($enc, $plain, string $alg = 'AES')
     {
-        $mode = env('PAYROLL_READ_MODE', 'TRANSITION'); // TRANSITION | CIPHER_ONLY
+        $mode = self::readMode();
+        $alg  = strtoupper((string) $alg);
 
-        // Mode cipher-only: WAJIB decrypt, jangan pernah pakai plaintext
         if ($mode === 'CIPHER_ONLY') {
             return match ($alg) {
                 'AES' => self::decryptAESGCM($enc),
+                'RSA' => self::decryptRSA($enc),
+                'HYBRID' => self::decryptHybrid($enc),
                 default => throw new \RuntimeException("Algoritma tidak dikenali: {$alg}"),
             };
         }
 
-        // Mode transisi: kalau plaintext ada, pakai plaintext
         if ($plain !== null && $plain !== '') return $plain;
 
-        // Kalau plaintext kosong, baru decrypt
         if ($enc) {
             return match ($alg) {
                 'AES' => self::decryptAESGCM($enc),
+                'RSA' => self::decryptRSA($enc),
                 default => null,
             };
         }
@@ -211,5 +213,218 @@ class CryptoService
         return null;
     }
 }
+
+    public static function encryptRSA(string $plain): string
+    {
+        $key = self::activeRsaKey();
+        $ok = openssl_public_encrypt(
+            $plain,
+            $cipherBin,
+            $key->public_key_pem,
+            OPENSSL_PKCS1_OAEP_PADDING
+        );
+
+        if (!$ok) {
+            throw new CryptoException('RSA encrypt failed: ' . openssl_error_string());
+        }
+
+        // Simpan sebagai JSON biar record "self-contained"
+        // (karena kolom payroll kamu tidak punya iv/tag khusus RSA)
+        return json_encode([
+            'v' => 1,
+            'alg' => 'RSA-2048-OAEP',
+            'rsa_key_id' => $key->id,
+            'ct' => base64_encode($cipherBin),
+        ], JSON_UNESCAPED_SLASHES);
+    }
+
+    public static function decryptRSA(?string $payloadJson): ?string
+{
+    if (!$payloadJson) return null;
+
+    $payload = json_decode($payloadJson, true);
+    if (!is_array($payload) || empty($payload['ct']) || empty($payload['rsa_key_id'])) {
+        throw new CryptoException("RSA payload invalid.");
+    }
+
+    $keyId = (int) $payload['rsa_key_id'];
+// kalau payload mengacu ke key aktif, pakai cache private pem
+    if (self::$activeRsaKeyCache && self::$activeRsaKeyCache->id === $keyId) {
+        $privatePem = self::activePrivatePem();
+    } else {
+        $key = CryptoKey::findOrFail($keyId);
+        $privatePem = Crypt::decryptString($key->private_key_pem_enc);
+    }
+
+    $cipherBin = base64_decode($payload['ct'], true);
+    if ($cipherBin === false) {
+        throw new CryptoException("RSA ciphertext base64 invalid.");
+    }
+
+    $ok = openssl_private_decrypt(
+        $cipherBin,
+        $plain,
+        $privatePem,
+        OPENSSL_PKCS1_OAEP_PADDING
+    );
+
+    if (!$ok) {
+        throw new CryptoException("RSA decrypt failed: " . openssl_error_string());
+    }
+
+    return $plain;
+}
+
+public static function rsaKeyId(): string
+{
+    $key = CryptoKey::where('status','active')->firstOrFail();
+    return 'rsa2048:' . $key->id;
+}
+
+    public static function encryptHybrid(string $plain): string
+    {
+        // 1) ambil RSA key aktif
+        $rsa = self::activeRsaKey();
+
+        // 2) buat AES-128 key random (16 byte)
+        $aesKey = random_bytes(16);
+
+        // 3) encrypt data pakai AES-128-GCM
+        $iv  = random_bytes(12);
+        $tag = '';
+        $cipher = openssl_encrypt(
+            $plain,
+            'aes-128-gcm',
+            $aesKey,
+            OPENSSL_RAW_DATA,
+            $iv,
+            $tag
+        );
+
+        if ($cipher === false) {
+            throw new CryptoException('HYBRID AES encrypt failed: ' . openssl_error_string());
+        }
+
+        // 4) encrypt AES key pakai RSA public key (OAEP)
+        $ok = openssl_public_encrypt(
+            $aesKey,
+            $ekBin,
+            $rsa->public_key_pem,
+            OPENSSL_PKCS1_OAEP_PADDING
+        );
+
+        if (!$ok) {
+            throw new CryptoException('HYBRID RSA encrypt key failed: ' . openssl_error_string());
+        }
+
+        // 5) simpan JSON payload
+        return json_encode([
+            'v' => 1,
+            'alg' => 'HYBRID-RSA2048-OAEP-AES128-GCM',
+            'rsa_key_id' => (int) $rsa->id,
+            'ek' => base64_encode($ekBin),
+            'iv' => base64_encode($iv),
+            'tag' => base64_encode($tag),
+            'ct' => base64_encode($cipher),
+        ], JSON_UNESCAPED_SLASHES);
+    }
+
+
+    public static function decryptHybrid(?string $payloadJson): ?string
+    {
+        if (!$payloadJson) return null;
+
+        $p = json_decode($payloadJson, true);
+        if (!is_array($p)) {
+            throw new CryptoException('HYBRID payload invalid JSON.');
+        }
+
+        foreach (['ek','iv','tag','ct','rsa_key_id'] as $k) {
+            if (empty($p[$k])) throw new CryptoException("HYBRID payload missing: {$k}");
+        }
+
+        $keyId = (int) $p['rsa_key_id'];
+
+        if (self::$activeRsaKeyCache && self::$activeRsaKeyCache->id === $keyId) {
+            $privatePem = self::activePrivatePem();
+        } else {
+            $rsa = CryptoKey::findOrFail($keyId);
+            $privatePem = Crypt::decryptString($rsa->private_key_pem_enc);
+        }
+
+        $ek  = base64_decode($p['ek'], true);
+        $iv  = base64_decode($p['iv'], true);
+        $tag = base64_decode($p['tag'], true);
+        $ct  = base64_decode($p['ct'], true);
+
+        if ($ek === false || $iv === false || $tag === false || $ct === false) {
+            throw new CryptoException('HYBRID base64 decode failed.');
+        }
+
+        // 1) decrypt AES key pakai RSA private key
+        $ok = openssl_private_decrypt(
+            $ek,
+            $aesKey,
+            $privatePem,
+            OPENSSL_PKCS1_OAEP_PADDING
+        );
+
+        if (!$ok) {
+            throw new CryptoException('HYBRID RSA decrypt key failed: ' . openssl_error_string());
+        }
+
+        // 2) decrypt data pakai AES-128-GCM
+        $plain = openssl_decrypt(
+            $ct,
+            'aes-128-gcm',
+            $aesKey,
+            OPENSSL_RAW_DATA,
+            $iv,
+            $tag
+        );
+
+        if ($plain === false) {
+            throw new CryptoException('HYBRID AES decrypt failed: ' . openssl_error_string());
+        }
+
+        return $plain;
+    }
+
+    public static function hybridKeyId(): string
+    {
+        $key = CryptoKey::where('status','active')->firstOrFail();
+        return 'hybrid:rsa2048:' . $key->id;
+    }
+
+    public static function writeAlg(): string
+    {
+        return strtoupper((string) config('crypto.payroll_write_alg', 'AES'));
+    }
+
+    public static function readMode(): string
+    {
+        return strtoupper((string) config('crypto.payroll_read_mode', 'TRANSITION'));
+    }
+
+    private static ?CryptoKey $activeRsaKeyCache = null;
+    private static ?string $activePrivatePemCache = null;
+
+    private static function activeRsaKey(): CryptoKey
+    {
+        if (self::$activeRsaKeyCache) return self::$activeRsaKeyCache;
+
+        $key = CryptoKey::where('status', 'active')->firstOrFail();
+        self::$activeRsaKeyCache = $key;
+        return $key;
+    }
+
+    private static function activePrivatePem(): string
+    {
+        if (self::$activePrivatePemCache) return self::$activePrivatePemCache;
+
+        $key = self::activeRsaKey();
+        self::$activePrivatePemCache = Crypt::decryptString($key->private_key_pem_enc);
+        return self::$activePrivatePemCache;
+    }
 
 }

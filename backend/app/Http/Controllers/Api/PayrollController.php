@@ -9,6 +9,8 @@ use Illuminate\Http\Request;
 use App\Services\CryptoService;
 use Barryvdh\DomPDF\Facade\Pdf;
 use App\Models\AuditLog;
+use Carbon\Carbon;
+use App\Models\PerfLog;
 
 class PayrollController extends Controller
 {
@@ -95,13 +97,20 @@ class PayrollController extends Controller
     {
         $this->authorize('view', $payroll);
 
+        $t0_total = hrtime(true);
+
+        // Reset relation + load (bagian DB)
         $payroll->unsetRelation('employee');
         $payroll->unsetRelation('user');
+
+        $t0_db = hrtime(true);
 
         $payroll->load([
             'user:id,name',
             'employee:id,user_id,employee_code,name,status',
         ]);
+
+        $db_ms = (hrtime(true) - $t0_db) / 1e6;
 
         $user = $request->user();
         $canSeeNominal = $this->canSeeNominal($user, $payroll);
@@ -110,7 +119,11 @@ class PayrollController extends Controller
         $gaji = $tunj = $pot = $total = null;
         $cat  = null;
 
+        $dec_ms = null;
+
         if ($canSeeNominal) {
+            $t0_dec = hrtime(true);
+
             try {
                 $gaji  = CryptoService::readEncryptedOrPlain($payroll->gaji_pokok_enc, $payroll->gaji_pokok, $alg);
                 $tunj  = CryptoService::readEncryptedOrPlain($payroll->tunjangan_enc,  $payroll->tunjangan,  $alg);
@@ -118,18 +131,33 @@ class PayrollController extends Controller
                 $total = CryptoService::readEncryptedOrPlain($payroll->total_enc,      $payroll->total,      $alg);
                 $cat   = CryptoService::readEncryptedOrPlain($payroll->catatan_enc,    $payroll->catatan,    $alg);
 
-                // FE enak: nominal jadi float (catatan tetap string/null)
+                // nominal jadi float
                 $gaji  = $gaji  !== null ? (float) $gaji : null;
                 $tunj  = $tunj  !== null ? (float) $tunj : null;
                 $pot   = $pot   !== null ? (float) $pot  : null;
                 $total = $total !== null ? (float) $total : null;
+
+                $dec_ms = (hrtime(true) - $t0_dec) / 1e6;
             } catch (\Throwable $e) {
-                // Optional: log internal (tidak bocorkan ke user)
-                // logger()->warning('PAYROLL_DETAIL_DECRYPT_FAILED', [
-                //     'payroll_id' => $payroll->id,
-                //     'alg' => $alg,
-                //     'err' => $e->getMessage(),
-                // ]);
+                // Catat perf log failure (optional)
+                $total_ms_fail = (hrtime(true) - $t0_total) / 1e6;
+
+                try {
+                    PerfLog::create([
+                        'scenario' => 'READ_DETAIL',
+                        'alg' => strtoupper((string) $alg),
+                        'payroll_id' => $payroll->id,
+                        'decrypt_ms' => null,
+                        'db_ms' => $db_ms,
+                        'total_ms' => $total_ms_fail,
+                        'meta' => [
+                            'masked' => false,
+                            'decrypt_error' => 'DECRYPT_FAILED',
+                        ],
+                    ]);
+                } catch (\Throwable $e2) {
+                    // ignore
+                }
 
                 return response()->json([
                     'message' => 'Data payroll tidak dapat diproses. Hubungi admin.',
@@ -137,8 +165,27 @@ class PayrollController extends Controller
             }
         }
 
-        // audit untuk view detail (aman karena tidak menyimpan nominal)
+        // audit view detail
         $this->audit($request, 'PAYROLL_VIEW_DETAIL', $payroll);
+
+        $total_ms = (hrtime(true) - $t0_total) / 1e6;
+
+        // simpan perf log (kalau tidak berhak lihat nominal, decrypt_ms null)
+        try {
+            PerfLog::create([
+                'scenario' => 'READ_DETAIL',
+                'alg' => strtoupper((string) $alg),
+                'payroll_id' => $payroll->id,
+                'decrypt_ms' => $dec_ms,
+                'db_ms' => $db_ms,
+                'total_ms' => $total_ms,
+                'meta' => [
+                    'masked' => !$canSeeNominal,
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            // ignore
+        }
 
         return response()->json([
             'id' => $payroll->id,
@@ -236,210 +283,270 @@ class PayrollController extends Controller
      * POST /api/payrolls
      * Create payroll
      */
-    public function store(Request $request)
-    {
-        $this->authorize('create', Payroll::class);
+public function store(Request $request)
+{
+    $this->authorize('create', Payroll::class);
 
-        $data = $request->validate([
-            'employee_id' => ['required', 'exists:employees,id'],
-            'periode'     => ['required', 'date'],
+    // ===== total timer (seluruh proses backend store) =====
+    $t0_total = hrtime(true);
 
-            'gaji_pokok'  => ['required', 'numeric', 'min:0'],
-            'tunjangan'   => ['nullable', 'numeric', 'min:0'],
-            'potongan'    => ['nullable', 'numeric', 'min:0'],
-            'catatan'     => ['nullable', 'string', 'max:500'],
+    $data = $request->validate([
+        'employee_id' => ['required', 'exists:employees,id'],
+        'periode'     => ['required', 'date'],
+        'gaji_pokok'  => ['required', 'numeric', 'min:0'],
+        'tunjangan'   => ['nullable', 'numeric', 'min:0'],
+        'potongan'    => ['nullable', 'numeric', 'min:0'],
+        'catatan'     => ['nullable', 'string', 'max:500'],
+    ]);
+        // ✅ paksa periode jadi awal bulan (YYYY-MM-01)
+    $periode = Carbon::parse($data['periode'])->startOfMonth();
+    $data['periode'] = $periode->toDateString();
+
+
+    // ===== validasi status employee =====
+    $employee = Employee::select('id','status')->findOrFail($data['employee_id']);
+    if (($employee->status ?? null) !== 'active') {
+        return response()->json([
+            'message' => 'Employee inactive tidak bisa dibuat payroll.',
+            'errors'  => ['employee_id' => ['Employee status inactive.']],
+        ], 422);
+    }
+
+    // ===== cek duplikat periode =====
+    $exists = Payroll::where('employee_id', $data['employee_id'])
+        ->whereYear('periode', $periode->year)
+        ->whereMonth('periode', $periode->month)
+        ->exists();
+
+    if ($exists) {
+        return response()->json([
+            'message' => 'Payroll untuk employee dan periode ini sudah ada.',
+            'errors'  => ['periode' => ['Payroll periode ini sudah dibuat.']],
+        ], 422);
+    }
+
+    // ===== hitung nominal =====
+    $gaji  = (float) $data['gaji_pokok'];
+    $tunj  = (float) ($data['tunjangan'] ?? 0);
+    $pot   = (float) ($data['potongan'] ?? 0);
+    $total = $gaji + $tunj - $pot;
+
+    // ===== algoritma dari ENV =====
+    $alg = CryptoService::writeAlg();
+
+    $enc = function (string $v) use ($alg) {
+        return match ($alg) {
+            'RSA'    => CryptoService::encryptRSA($v),
+            'HYBRID' => CryptoService::encryptHybrid($v),
+            default  => CryptoService::encryptAESGCM($v),
+        };
+    };
+
+    // salary_key_id buat audit/rotasi/pembanding TA
+    $keyId = match ($alg) {
+        'RSA'    => CryptoService::rsaKeyId(),
+        'HYBRID' => CryptoService::rsaKeyId(), // hybrid pakai RSA key id untuk wrapping
+        default  => CryptoService::keyId(),
+    };
+
+    // ===== encrypt timer (hanya proses encrypt field) =====
+    $t0_enc = hrtime(true);
+
+    $gaji_enc  = $enc((string) $gaji);
+    $tunj_enc  = $enc((string) $tunj);
+    $pot_enc   = $enc((string) $pot);
+    $total_enc = $enc((string) $total);
+    $cat_enc   = !empty($data['catatan']) ? $enc((string) $data['catatan']) : null;
+
+    $enc_ms = (hrtime(true) - $t0_enc) / 1e6;
+
+    // ===== DB timer (hanya create/insert payroll) =====
+    $t0_db = hrtime(true);
+
+    $payroll = Payroll::create([
+        'user_id'     => $request->user()->id,
+        'employee_id' => $data['employee_id'],
+        'periode'     => $data['periode'],
+
+        // plaintext null (CIPHER_ONLY)
+        'gaji_pokok' => null,
+        'tunjangan'  => null,
+        'potongan'   => null,
+        'total'      => null,
+        'catatan'    => null,
+
+        // ciphertext
+        'gaji_pokok_enc' => $gaji_enc,
+        'tunjangan_enc'  => $tunj_enc,
+        'potongan_enc'   => $pot_enc,
+        'total_enc'      => $total_enc,
+        'catatan_enc'    => $cat_enc,
+
+        'salary_alg'    => $alg,
+        'salary_key_id' => $keyId,
+    ]);
+
+    $db_ms = (hrtime(true) - $t0_db) / 1e6;
+
+    // ===== audit (punyamu) =====
+    $this->audit($request, 'PAYROLL_CREATE', $payroll, [
+        'employee_id' => $payroll->employee_id,
+        'periode'     => $payroll->periode,
+        'alg'         => $payroll->salary_alg,
+        'key_id'      => $payroll->salary_key_id,
+    ]);
+
+    // ===== total time =====
+    $total_ms = (hrtime(true) - $t0_total) / 1e6;
+
+    // ===== simpan perf log (jangan ganggu flow kalau error) =====
+    try {
+        PerfLog::create([
+            'scenario' => 'CREATE',
+            'alg' => $alg,
+            'payroll_id' => $payroll->id,
+            'encrypt_ms' => $enc_ms,
+            'db_ms' => $db_ms,
+            'total_ms' => $total_ms,
+            'meta' => [
+                'read_mode' => env('PAYROLL_READ_MODE'),
+                'storage_mode' => env('SALARY_STORAGE_MODE'),
+                'cat_len' => isset($data['catatan']) ? strlen((string) $data['catatan']) : 0,
+            ],
         ]);
+    } catch (\Throwable $e) {
+        // optional: logger()->warning('PERFLOG_CREATE_FAILED', ['err' => $e->getMessage()]);
+    }
 
-        // ✅ VALIDASI: employee harus active
-        $employee = Employee::select('id', 'status')->findOrFail($data['employee_id']);
-        if (($employee->status ?? null) !== 'active') {
-            return response()->json([
-                'message' => 'Employee inactive tidak bisa dibuat payroll.',
-                'errors'  => ['employee_id' => ['Employee status inactive.']],
-            ], 422);
-        }
+    $payroll->load(['user:id,name','employee:id,employee_code,name,status']);
 
-        // ✅ Cegah payroll dobel periode untuk employee yang sama
-        $exists = Payroll::where('employee_id', $data['employee_id'])
-            ->whereDate('periode', $data['periode'])
+    return response()->json([
+        'message' => 'Payroll created',
+        'data' => [
+            'id' => $payroll->id,
+            'employee_id' => $payroll->employee_id,
+            'employee_code' => $payroll->employee?->employee_code,
+            'employee_name' => $payroll->employee?->name,
+            'employee_status' => $payroll->employee?->status,
+            'created_by' => $payroll->user?->name,
+            'periode' => optional($payroll->periode)->toDateString(),
+            'masked' => false,
+            'created_at' => optional($payroll->created_at)->toDateTimeString(),
+        ],
+    ], 201);
+}
+
+        /**
+         * PUT/PATCH /api/payrolls/{payroll}
+         */
+public function update(Request $request, Payroll $payroll)
+{
+    $this->authorize('update', $payroll);
+
+    $data = $request->validate([
+        'periode'    => ['sometimes', 'date'],
+        'gaji_pokok' => ['sometimes', 'numeric', 'min:0'],
+        'tunjangan'  => ['sometimes', 'nullable', 'numeric', 'min:0'],
+        'potongan'   => ['sometimes', 'nullable', 'numeric', 'min:0'],
+        'catatan'    => ['sometimes', 'nullable', 'string', 'max:500'],
+        // ✅ tidak terima salary_alg dari FE
+    ]);
+
+    // 1) Algoritma target dari ENV
+    $alg = strtoupper((string) env('PAYROLL_WRITE_ALG', ($payroll->salary_alg ?? 'AES')));
+
+    $enc = function (string $v) use ($alg) {
+        return match ($alg) {
+            'RSA'    => CryptoService::encryptRSA($v),
+            'HYBRID' => CryptoService::encryptHybrid($v),
+            default  => CryptoService::encryptAESGCM($v),
+        };
+    };
+
+    // ✅ salary_key_id ditentukan DI SINI
+    $keyId = match ($alg) {
+        'RSA'    => CryptoService::rsaKeyId(),
+        'HYBRID' => CryptoService::rsaKeyId(),
+        default  => CryptoService::keyId(),
+    };
+
+    // 2) Ambil nilai lama (cipher-only => decrypt dari *_enc)
+    $oldAlg = strtoupper((string) ($payroll->salary_alg ?? 'AES'));
+
+    $oldGaji = (float) CryptoService::readEncryptedOrPlainSafe($payroll->gaji_pokok_enc, null, $oldAlg);
+    $oldTunj = (float) CryptoService::readEncryptedOrPlainSafe($payroll->tunjangan_enc,  null, $oldAlg);
+    $oldPot  = (float) CryptoService::readEncryptedOrPlainSafe($payroll->potongan_enc,   null, $oldAlg);
+
+    $gaji = array_key_exists('gaji_pokok', $data) ? (float) $data['gaji_pokok'] : $oldGaji;
+    $tunj = array_key_exists('tunjangan', $data) ? (float) ($data['tunjangan'] ?? 0) : $oldTunj;
+    $pot  = array_key_exists('potongan', $data) ? (float) ($data['potongan'] ?? 0) : $oldPot;
+
+    $total = $gaji + $tunj - $pot;
+
+    $periode = null;
+    if (array_key_exists('periode', $data)) {
+        $periode = Carbon::parse($data['periode'])->startOfMonth();
+        $data['periode'] = $periode->toDateString();
+    }
+
+    // 3) Cegah duplikat periode
+    if ($periode) {
+        $exists = Payroll::where('employee_id', $payroll->employee_id)
+            ->whereYear('periode', $periode->year)
+            ->whereMonth('periode', $periode->month)
+            ->where('id', '!=', $payroll->id)
             ->exists();
 
         if ($exists) {
             return response()->json([
-                'message' => 'Payroll untuk employee dan periode ini sudah ada.',
-                'errors'  => ['periode' => ['Payroll periode ini sudah dibuat.']],
+                'message' => 'Payroll untuk employee dan bulan ini sudah ada.',
+                'errors'  => ['periode' => ['Payroll bulan ini sudah dibuat.']],
             ], 422);
         }
-
-        // ===========================
-        // 1) Hitung nominal
-        // ===========================
-        $gaji  = (float) $data['gaji_pokok'];
-        $tunj  = (float) ($data['tunjangan'] ?? 0);
-        $pot   = (float) ($data['potongan'] ?? 0);
-        $total = $gaji + $tunj - $pot;
-
-        // ===========================
-        // 2) Simpan PLAINTEXT + CIPHERTEXT
-        // ===========================
-        $payroll = Payroll::create([
-            'user_id'     => $request->user()->id, // creator
-            'employee_id' => $data['employee_id'],
-            'periode'     => $data['periode'],
-
-            // plaintext (mode transisi, biar sistem tetap jalan)
-            'gaji_pokok'  => $gaji,
-            'tunjangan'   => $tunj,
-            'potongan'    => $pot,
-            'total'       => $total,
-            'catatan'     => $data['catatan'] ?? null,
-
-            // ciphertext (hasil enkripsi untuk TA & keamanan DB)
-            'gaji_pokok_enc' => CryptoService::encryptAESGCM((string) $gaji),
-            'tunjangan_enc'  => CryptoService::encryptAESGCM((string) $tunj),
-            'potongan_enc'   => CryptoService::encryptAESGCM((string) $pot),
-            'total_enc'      => CryptoService::encryptAESGCM((string) $total),
-            'catatan_enc'    => !empty($data['catatan'])
-                ? CryptoService::encryptAESGCM((string) $data['catatan'])
-                : null,
-
-            // metadata
-            'salary_alg'    => 'AES',
-            'salary_key_id' => CryptoService::keyId(),
-        ]);
-
-        $this->audit(
-            $request,
-            'PAYROLL_CREATE',
-            $payroll,
-            [
-                'employee_id' => $payroll->employee_id,
-                'periode' => $payroll->periode,
-                'alg' => $payroll->salary_alg,
-                ]);
-
-
-        // balikin response yang konsisten dengan show (biar frontend enak)
-        $payroll->load(['user:id,name', 'employee:id,employee_code,name,status']);
-
-        return response()->json([
-            'message' => 'Payroll created',
-            'data' => [
-                'id' => $payroll->id,
-                'employee_id' => $payroll->employee_id,
-                'employee_code' => $payroll->employee?->employee_code,
-                'employee_name' => $payroll->employee?->name,
-                'employee_status' => $payroll->employee?->status,
-                'created_by' => $payroll->user?->name,
-                'periode' => optional($payroll->periode)->toDateString(),
-
-                // response tetap plaintext (role yang create biasanya FAT/Direktur)
-                'gaji_pokok' => $payroll->gaji_pokok,
-                'tunjangan'  => $payroll->tunjangan,
-                'potongan'   => $payroll->potongan,
-                'total'      => $payroll->total,
-                'catatan'    => $payroll->catatan,
-
-                'masked'     => false,
-                'created_at' => optional($payroll->created_at)->toDateTimeString(),
-            ],
-        ], 201);
     }
 
-    /**
-     * PUT/PATCH /api/payrolls/{payroll}
-     */
-    public function update(Request $request, Payroll $payroll)
-    {
-        $this->authorize('update', $payroll);
 
-        $data = $request->validate([
-            'periode'    => ['sometimes', 'date'],
-            'gaji_pokok' => ['sometimes', 'numeric', 'min:0'],
-            'tunjangan'  => ['sometimes', 'nullable', 'numeric', 'min:0'],
-            'potongan'   => ['sometimes', 'nullable', 'numeric', 'min:0'],
-            'catatan'    => ['sometimes', 'nullable', 'string', 'max:500'],
-        ]);
+    // 4) Cipher-only: plaintext NULL
+    $data['gaji_pokok'] = null;
+    $data['tunjangan']  = null;
+    $data['potongan']   = null;
+    $data['total']      = null;
+    if (array_key_exists('catatan', $data)) $data['catatan'] = null;
 
-        // ===========================
-        // 1) Hitung ulang total
-        // ===========================
-        $gaji = array_key_exists('gaji_pokok', $data)
-            ? (float) $data['gaji_pokok']
-            : (float) $payroll->gaji_pokok;
+    // 5) Update ciphertext
+    $data['gaji_pokok_enc'] = $enc((string) $gaji);
+    $data['tunjangan_enc']  = $enc((string) $tunj);
+    $data['potongan_enc']   = $enc((string) $pot);
+    $data['total_enc']      = $enc((string) $total);
 
-        $tunj = array_key_exists('tunjangan', $data)
-            ? (float) ($data['tunjangan'] ?? 0)
-            : (float) ($payroll->tunjangan ?? 0);
-
-        $pot = array_key_exists('potongan', $data)
-            ? (float) ($data['potongan'] ?? 0)
-            : (float) ($payroll->potongan ?? 0);
-
-        $total = $gaji + $tunj - $pot;
-        $data['total'] = $total;
-
-        // ===========================
-        // 2) Cegah duplikat periode
-        // ===========================
-        if (array_key_exists('periode', $data)) {
-            $exists = Payroll::where('employee_id', $payroll->employee_id)
-                ->whereDate('periode', $data['periode'])
-                ->where('id', '!=', $payroll->id)
-                ->exists();
-
-            if ($exists) {
-                return response()->json([
-                    'message' => 'Payroll untuk periode ini sudah ada.',
-                    'errors'  => ['periode' => ['Payroll periode ini sudah dibuat.']],
-                ], 422);
-            }
-        }
-
-        // ===========================
-        // 3) Update ciphertext
-        // ===========================
-        $data['gaji_pokok_enc'] = CryptoService::encryptAESGCM((string) $gaji);
-        $data['tunjangan_enc']  = CryptoService::encryptAESGCM((string) $tunj);
-        $data['potongan_enc']   = CryptoService::encryptAESGCM((string) $pot);
-        $data['total_enc']      = CryptoService::encryptAESGCM((string) $total);
-
-        if (array_key_exists('catatan', $data)) {
-            $data['catatan_enc'] = !empty($data['catatan'])
-                ? CryptoService::encryptAESGCM((string) $data['catatan'])
-                : null;
-        }
-
-        $data['salary_alg']    = 'AES';
-        $data['salary_key_id'] = CryptoService::keyId();
-
-        // ===========================
-        // 4) Simpan update
-        // ===========================
-        $payroll->update($data);
-
-        // ===========================
-        // 5) AUDIT LOG (DI SINI)
-        // ===========================
-        $this->audit(
-            $request,
-            'payroll.update',
-            $payroll,
-            [
-                'fields_updated' => array_keys($data),
-                'employee_id'    => $payroll->employee_id,
-                'periode'        => optional($payroll->periode)->toDateString(),
-            ]
-        );
-
-        return response()->json([
-            'message' => 'Payroll updated',
-            'data' => $payroll->fresh()->loadMissing([
-                'user:id,name',
-                'employee:id,employee_code,name,status'
-            ]),
-        ]);
+    if (array_key_exists('catatan', $data)) {
+        $data['catatan_enc'] = !empty($request->input('catatan'))
+            ? $enc((string) $request->input('catatan'))
+            : null;
     }
+
+    // ✅ METADATA INI WAJIB ADA sebelum update()
+    $data['salary_alg']    = $alg;
+    $data['salary_key_id'] = $keyId; // ✅ INI TEMPATNYA
+
+    $payroll->update($data);
+
+    $this->audit($request, 'PAYROLL_UPDATE', $payroll, [
+        'fields_updated' => array_keys($data),
+        'employee_id'    => $payroll->employee_id,
+        'periode'        => optional($payroll->periode)->toDateString(),
+        'alg'            => $alg,
+        'key_id'         => $keyId,
+    ]);
+
+    return response()->json([
+        'message' => 'Payroll updated',
+        'data' => $payroll->fresh()->loadMissing([
+            'user:id,name',
+            'employee:id,employee_code,name,status'
+        ]),
+    ]);
+}
 
     /**
      * DELETE /api/payrolls/{payroll}
@@ -488,6 +595,7 @@ private function canSeeNominal($user, Payroll $payroll): bool
 
     return false;
 }
+
 
     private function audit(Request $request, string $action, ?Payroll $payroll = null, array $meta = []): void
     {

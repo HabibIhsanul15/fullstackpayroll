@@ -1,6 +1,20 @@
-import { useMemo, useState } from "react";
-import { useNavigate, useParams, Link } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import { getToken } from "../lib/auth";
+
+function monthToFirstDate(yyyyMM) {
+  if (!yyyyMM) return "";
+  if (/^\d{4}-\d{2}$/.test(yyyyMM)) return `${yyyyMM}-01`;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(yyyyMM)) return yyyyMM;
+  return "";
+}
+
+function todayMonth() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  return `${yyyy}-${mm}`; // YYYY-MM
+}
 
 export default function SalaryProfileCreatePage() {
   const { id } = useParams();
@@ -11,32 +25,107 @@ export default function SalaryProfileCreatePage() {
     []
   );
 
+  // ===== state =====
+  const [hasProfile, setHasProfile] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+
+  // bulan berlaku mulai (UI) -> nanti dikirim YYYY-MM-01
+  const [effectiveMonth, setEffectiveMonth] = useState(() => todayMonth());
+
   const [form, setForm] = useState({
     base_salary: "",
     allowance_fixed: "",
     deduction_fixed: "",
-    effective_from: new Date().toISOString().slice(0, 10),
   });
 
   const [loading, setLoading] = useState(false);
+  const [loadingProfile, setLoadingProfile] = useState(true);
   const [serverError, setServerError] = useState("");
+  const [ok, setOk] = useState("");
 
   function setField(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }));
   }
+
+  // ===== load current salary profile (berdasarkan bulan dipilih) =====
+  async function loadProfile(month = effectiveMonth) {
+    const token = getToken();
+    setServerError("");
+    setOk("");
+    setLoadingProfile(true);
+
+    try {
+      const dateStr = monthToFirstDate(month);
+      const url = new URL(`${API_BASE}/api/employees/${id}/salary-profile`);
+      url.searchParams.set("date", dateStr);
+
+      const res = await fetch(url.toString(), {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json",
+        },
+      });
+
+      // 404 = belum ada profile
+      if (res.status === 404) {
+        setHasProfile(false);
+        setIsEditing(true); // kalau belum ada, langsung boleh isi
+        setForm({ base_salary: "", allowance_fixed: "", deduction_fixed: "" });
+        return;
+      }
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setServerError(data?.message || "Gagal memuat salary profile.");
+        return;
+      }
+
+      // sukses: isi form dari profile
+      setHasProfile(true);
+      setIsEditing(false); // default view-only
+      setForm({
+        base_salary: String(data?.base_salary ?? "0"),
+        allowance_fixed: String(data?.allowance_fixed ?? "0"),
+        deduction_fixed: String(data?.deduction_fixed ?? "0"),
+      });
+
+      // sinkron month dari effective_from jika ada
+      if (data?.effective_from && /^\d{4}-\d{2}-\d{2}$/.test(data.effective_from)) {
+        setEffectiveMonth(data.effective_from.slice(0, 7));
+      }
+    } catch (e) {
+      setServerError("Tidak bisa terhubung ke server backend.");
+    } finally {
+      setLoadingProfile(false);
+    }
+  }
+
+  useEffect(() => {
+    loadProfile();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // kalau user ganti bulan, coba load profile bulan itu
+  useEffect(() => {
+    // biar gak spam pas initial render
+    if (!id) return;
+    loadProfile(effectiveMonth);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveMonth]);
 
   async function handleSubmit(e) {
     e.preventDefault();
     const token = getToken();
     setLoading(true);
     setServerError("");
+    setOk("");
 
     try {
       const payload = {
-        ...form,
         base_salary: Number(form.base_salary || 0),
         allowance_fixed: Number(form.allowance_fixed || 0),
         deduction_fixed: Number(form.deduction_fixed || 0),
+        effective_from: monthToFirstDate(effectiveMonth), // ✅ always YYYY-MM-01
       };
 
       const res = await fetch(`${API_BASE}/api/employees/${id}/salary-profiles`, {
@@ -55,7 +144,9 @@ export default function SalaryProfileCreatePage() {
         return;
       }
 
-      navigate("/employees");
+      setOk("Profil gaji berhasil disimpan.");
+      setHasProfile(true);
+      setIsEditing(false);
     } catch (err) {
       setServerError("Tidak bisa terhubung ke server backend.");
     } finally {
@@ -68,32 +159,46 @@ export default function SalaryProfileCreatePage() {
     Number(form.allowance_fixed || 0) -
     Number(form.deduction_fixed || 0);
 
+  const isReadOnly = hasProfile && !isEditing;
+
   return (
     <div style={pageWrap}>
-      {/* Header ala Payroll */}
+      {/* HEADER: sesuai maumu */}
       <div style={headerBar}>
         <div>
           <h1 style={title}>Atur Profil Gaji</h1>
-          <p style={subtitle}>Isi struktur gaji untuk karyawan ini.</p>
+          <p style={subtitle}>
+            Berlaku mulai otomatis di tanggal 01 (per bulan).
+            {hasProfile ? " Klik Edit untuk mengubah." : " Silakan isi lalu simpan."}
+          </p>
         </div>
 
+        {/* kanan atas: kalau sudah ada -> hanya EDIT.
+           kalau belum ada -> tampil tombol SIMPAN */}
         <div style={{ display: "flex", gap: 10 }}>
-          <button
-            type="button"
-            style={btnGhost}
-            onClick={() => navigate(-1)}
-            disabled={loading}
-          >
-            Back
-          </button>
-          <button
-            type="submit"
-            form="salaryProfileForm"
-            style={btnPrimary}
-            disabled={loading}
-          >
-            {loading ? "Menyimpan..." : "Simpan Profil Gaji"}
-          </button>
+          {hasProfile ? (
+            <button
+              type="button"
+              style={btnPrimary}
+              onClick={() => {
+                setServerError("");
+                setOk("");
+                setIsEditing(true);
+              }}
+              disabled={loadingProfile || loading}
+            >
+              Edit
+            </button>
+          ) : (
+            <button
+              type="submit"
+              form="salaryProfileForm"
+              style={btnPrimary}
+              disabled={loadingProfile || loading}
+            >
+              {loading ? "Menyimpan..." : "Simpan Profil Gaji"}
+            </button>
+          )}
         </div>
       </div>
 
@@ -102,83 +207,123 @@ export default function SalaryProfileCreatePage() {
           <b>Gagal:</b> {serverError}
         </div>
       )}
+      {ok && (
+        <div style={alertOk}>
+          <b>OK:</b> {ok}
+        </div>
+      )}
 
-      {/* Card utama */}
       <div style={card}>
         <div style={cardHeader}>
           <div>
             <div style={cardTitle}>Profil Gaji</div>
             <div style={cardDesc}>
-              Data ini akan digunakan saat generate payroll.
+              Salary profile akan dipakai saat generate payroll (per bulan).
             </div>
           </div>
-          <div style={pill}>Salary Profile</div>
+
+          {hasProfile ? <div style={pill}>Sudah Ada</div> : <div style={pillWarn}>Belum Ada</div>}
         </div>
 
-        <form id="salaryProfileForm" onSubmit={handleSubmit} style={{ marginTop: 14 }}>
-          <div style={grid2}>
-            <Field
-              label="Gaji Pokok"
-              placeholder="contoh: 5000000"
-              value={form.base_salary}
-              onChange={(v) => setField("base_salary", v)}
-            />
-            <Field
-              label="Tunjangan Tetap"
-              placeholder="contoh: 500000"
-              value={form.allowance_fixed}
-              onChange={(v) => setField("allowance_fixed", v)}
-            />
-            <Field
-              label="Potongan Tetap"
-              placeholder="contoh: 200000"
-              value={form.deduction_fixed}
-              onChange={(v) => setField("deduction_fixed", v)}
-            />
-            <div>
-              <label style={label}>Berlaku Mulai</label>
-              <input
-                type="date"
-                value={form.effective_from}
-                onChange={(e) => setField("effective_from", e.target.value)}
-                style={input}
+        {loadingProfile ? (
+          <div style={{ marginTop: 14, opacity: 0.7 }}>Memuat data...</div>
+        ) : (
+          <form id="salaryProfileForm" onSubmit={handleSubmit} style={{ marginTop: 14 }}>
+            <div style={grid2}>
+              <Field
+                label="Gaji Pokok"
+                placeholder="contoh: 5000000"
+                value={form.base_salary}
+                onChange={(v) => setField("base_salary", v)}
+                disabled={isReadOnly}
               />
-            </div>
-          </div>
+              <Field
+                label="Tunjangan Tetap"
+                placeholder="contoh: 500000"
+                value={form.allowance_fixed}
+                onChange={(v) => setField("allowance_fixed", v)}
+                disabled={isReadOnly}
+              />
+              <Field
+                label="Potongan Tetap"
+                placeholder="contoh: 200000"
+                value={form.deduction_fixed}
+                onChange={(v) => setField("deduction_fixed", v)}
+                disabled={isReadOnly}
+              />
 
-          {/* Preview Total ala payroll */}
-          <div style={previewBox}>
-            <div style={{ fontSize: 12, opacity: 0.7 }}>Total (preview)</div>
-            <div style={{ fontSize: 20, fontWeight: 700, marginTop: 4 }}>
-              {formatIDR(totalPreview)}
+              <div>
+                <label style={label}>Berlaku Mulai (Bulan)</label>
+                <input
+                  type="month"
+                  value={effectiveMonth}
+                  onChange={(e) => setEffectiveMonth(e.target.value)}
+                  style={input}
+                  disabled={isReadOnly}
+                />
+                <div style={helper}>
+                  Dikirim ke backend sebagai: {monthToFirstDate(effectiveMonth) || "-"}
+                </div>
+              </div>
             </div>
-            <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
-              Total = gaji pokok + tunjangan − potongan
-            </div>
-          </div>
 
-          {/* Tombol bawah (biar mirip Payroll) */}
-          <div style={actionsRow}>
-            <button
-              type="button"
-              style={btnGhost}
-              onClick={() => navigate("/employees")}
-              disabled={loading}
-            >
-              Cancel
-            </button>
-            <button type="submit" style={btnPrimary} disabled={loading}>
-              {loading ? "Menyimpan..." : "Simpan Profil Gaji"}
-            </button>
-          </div>
-        </form>
+            <div style={previewBox}>
+              <div style={{ fontSize: 12, opacity: 0.7 }}>Total (preview)</div>
+              <div style={{ fontSize: 20, fontWeight: 700, marginTop: 4 }}>
+                {formatIDR(totalPreview)}
+              </div>
+              <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>
+                Total = gaji pokok + tunjangan − potongan
+              </div>
+            </div>
+
+            {/* AKSI BAWAH: sesuai maumu */}
+            <div style={actionsRow}>
+              <button
+                type="button"
+                style={btnGhost}
+                onClick={() => navigate("/employees")}
+                disabled={loading}
+              >
+                Ke Employees
+              </button>
+
+              {/* tombol simpan hanya muncul saat:
+                  - belum ada profile (create), atau
+                  - sudah ada & user klik edit (update via create record baru effective_from) */}
+              {(!hasProfile || isEditing) && (
+                <button type="submit" style={btnPrimary} disabled={loading}>
+                  {loading ? "Menyimpan..." : "Simpan Profil Gaji"}
+                </button>
+              )}
+
+              {/* saat mode edit, kasih cancel supaya balik read-only */}
+              {hasProfile && isEditing && (
+                <button
+                  type="button"
+                  style={btnGhost}
+                  disabled={loading}
+                  onClick={() => {
+                    setIsEditing(false);
+                    setServerError("");
+                    setOk("");
+                    // reload supaya balik ke nilai tersimpan
+                    loadProfile(effectiveMonth);
+                  }}
+                >
+                  Batal
+                </button>
+              )}
+            </div>
+          </form>
+        )}
       </div>
     </div>
   );
 }
 
 /* ---------- Small components ---------- */
-function Field({ label: labelText, placeholder, value, onChange }) {
+function Field({ label: labelText, placeholder, value, onChange, disabled }) {
   return (
     <div>
       <label style={label}>{labelText}</label>
@@ -187,7 +332,12 @@ function Field({ label: labelText, placeholder, value, onChange }) {
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        style={input}
+        style={{
+          ...input,
+          background: disabled ? "#f8fafc" : "#fff",
+          cursor: disabled ? "not-allowed" : "text",
+        }}
+        disabled={disabled}
       />
       <div style={helper}>Rp {formatNumber(value || 0)}</div>
     </div>
@@ -247,13 +397,28 @@ const pill = {
   color: "#111827",
 };
 
+const pillWarn = {
+  fontSize: 12,
+  padding: "6px 10px",
+  borderRadius: 999,
+  border: "1px solid #fde68a",
+  background: "#fffbeb",
+  color: "#92400e",
+};
+
 const grid2 = {
   display: "grid",
   gridTemplateColumns: "1fr 1fr",
   gap: 14,
 };
 
-const label = { display: "block", fontSize: 12, fontWeight: 700, marginBottom: 6, color: "#111827" };
+const label = {
+  display: "block",
+  fontSize: 12,
+  fontWeight: 700,
+  marginBottom: 6,
+  color: "#111827",
+};
 
 const input = {
   width: "100%",
@@ -279,13 +444,14 @@ const actionsRow = {
   display: "flex",
   justifyContent: "flex-end",
   gap: 10,
+  flexWrap: "wrap",
 };
 
 const btnPrimary = {
   padding: "10px 14px",
   borderRadius: 10,
   border: "1px solid #111",
-  background: "#2563eb", // biru ala tombol payroll
+  background: "#2563eb",
   color: "#fff",
   cursor: "pointer",
   fontWeight: 700,
@@ -308,4 +474,13 @@ const alertError = {
   padding: 12,
   borderRadius: 12,
   color: "#842029",
+};
+
+const alertOk = {
+  marginBottom: 12,
+  background: "#ecfdf5",
+  border: "1px solid #a7f3d0",
+  padding: 12,
+  borderRadius: 12,
+  color: "#065f46",
 };

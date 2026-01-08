@@ -36,40 +36,44 @@ class EmployeeController extends Controller
         ]);
     }
 
-    public function show(Request $request, Employee $employee)
-    {
-        $user = $request->user();
 
-        $isPrivileged = in_array($user->role, ['fat', 'director'], true);
-        $isOwner = $employee->user_id && $employee->user_id === $user->id;
+ public function show(Request $request, Employee $employee)
+{
+    $user = $request->user();
 
-        $base = [
-            'id' => $employee->id,
-            'employee_code' => $employee->employee_code,
-            'name' => $employee->name,
-            'department' => $employee->department,
-            'position' => $employee->position,
-            'status' => $employee->status,
-            'user_id' => $employee->user_id,
+    $isPrivileged = in_array($user->role, ['fat', 'director'], true);
+    $isOwner = $employee->user_id && $employee->user_id === $user->id;
+
+    $base = [
+        'id' => $employee->id,
+        'employee_code' => $employee->employee_code,
+        'name' => $employee->name,
+        'department' => $employee->department,
+        'position' => $employee->position,
+        'status' => $employee->status,
+        'user_id' => $employee->user_id,
+    ];
+
+    if ($isPrivileged || $isOwner) {
+        $alg = strtoupper((string) ($employee->pii_alg ?? 'AES'));
+
+        $base += [
+            'nik' => CryptoService::readEncryptedOrPlain($employee->nik_enc, $employee->nik, $alg),
+            'npwp' => CryptoService::readEncryptedOrPlain($employee->npwp_enc, $employee->npwp, $alg),
+            'phone' => CryptoService::readEncryptedOrPlain($employee->phone_enc, $employee->phone, $alg),
+            'address' => CryptoService::readEncryptedOrPlain($employee->address_enc, $employee->address, $alg),
+            'bank_account_number' => CryptoService::readEncryptedOrPlain(
+                $employee->bank_account_number_enc,
+                $employee->bank_account_number,
+                $alg
+            ),
         ];
-
-        // private info hanya untuk yang berhak
-        if ($isPrivileged || $isOwner) {
-            $base += [
-            'nik' => $employee->nik_enc ? CryptoService::decryptAESGCM($employee->nik_enc) : $employee->nik,
-            'npwp' => $employee->npwp_enc ? CryptoService::decryptAESGCM($employee->npwp_enc) : $employee->npwp,
-            'phone' => $employee->phone_enc ? CryptoService::decryptAESGCM($employee->phone_enc) : $employee->phone,
-            'address' => $employee->address_enc ? CryptoService::decryptAESGCM($employee->address_enc) : $employee->address,
-            'bank_account_number' => $employee->bank_account_number_enc
-                ? CryptoService::decryptAESGCM($employee->bank_account_number_enc)
-                : $employee->bank_account_number,
-            ];
-        } else {
-            $base['masked'] = true;
-        }
-
-        return response()->json($base);
+    } else {
+        $base['masked'] = true;
     }
+
+    return response()->json($base);
+}
 
 public function createUser(Request $request, Employee $employee)
 {
@@ -126,10 +130,11 @@ public function createUser(Request $request, Employee $employee)
             return response()->json(['message' => 'Salary profile not found'], 404);
         }
 
-        // prefer decrypt kalau ada ciphertext
-        $base = $profile->base_salary_enc ? (float) CryptoService::decryptAESGCM($profile->base_salary_enc) : (float) $profile->base_salary;
-        $allow = $profile->allowance_fixed_enc ? (float) CryptoService::decryptAESGCM($profile->allowance_fixed_enc) : (float) $profile->allowance_fixed;
-        $ded = $profile->deduction_fixed_enc ? (float) CryptoService::decryptAESGCM($profile->deduction_fixed_enc) : (float) $profile->deduction_fixed;
+        $alg = strtoupper((string) ($profile->salary_alg ?? 'AES'));
+
+        $base  = $profile->base_salary_enc ? (float) CryptoService::decryptByAlg($profile->base_salary_enc, $alg) : (float) $profile->base_salary;
+        $allow = $profile->allowance_fixed_enc ? (float) CryptoService::decryptByAlg($profile->allowance_fixed_enc, $alg) : (float) $profile->allowance_fixed;
+        $ded   = $profile->deduction_fixed_enc ? (float) CryptoService::decryptByAlg($profile->deduction_fixed_enc, $alg) : (float) $profile->deduction_fixed;
 
         return response()->json([
             'employee_id' => $employee->id,
@@ -142,133 +147,201 @@ public function createUser(Request $request, Employee $employee)
     }
 
 
-    public function store(Request $request)
-    {
-        $data = $request->validate([
-            'employee_code' => ['required', 'string', 'max:50', 'unique:employees,employee_code'],
-            'name' => ['required', 'string', 'max:255'],
-            'department' => ['nullable', 'string', 'max:255'],
-            'position' => ['nullable', 'string', 'max:255'],
-            'status' => ['required', Rule::in(['active', 'inactive'])],
-
-            'nik' => ['nullable', 'string', 'max:32'],
-            'npwp' => ['nullable', 'string', 'max:32'],
-            'phone' => ['nullable', 'string', 'max:20'],
-            'address' => ['nullable', 'string', 'max:500'],
-
-            'bank_name' => ['nullable', 'string', 'max:100'],
-            'bank_account_name' => ['nullable', 'string', 'max:100'],
-            'bank_account_number' => ['nullable', 'string', 'max:50'],
-        ]);
-
-        $data['user_id'] = null; // linking user tahap 2
-
-        $employee = Employee::create($data);
-
-        return response()->json([
-            'employee' => [
-                'id' => $employee->id,
-                'employee_code' => $employee->employee_code,
-                'name' => $employee->name,
-                'department' => $employee->department,
-                'position' => $employee->position,
-                'status' => $employee->status,
-                'user_id' => $employee->user_id,
-            ],
-        ], 201);
-    }
-
-public function storeSalaryProfile(Request $request, Employee $employee)
+public function store(Request $request)
 {
     $data = $request->validate([
-        'base_salary' => ['required', 'numeric', 'min:0'],
-        'allowance_fixed' => ['nullable', 'numeric', 'min:0'],
-        'deduction_fixed' => ['nullable', 'numeric', 'min:0'],
-        'effective_from' => ['required', 'date'],
+        'employee_code' => ['required', 'string', 'max:50', 'unique:employees,employee_code'],
+        'name' => ['required', 'string', 'max:255'],
+        'department' => ['nullable', 'string', 'max:255'],
+        'position' => ['nullable', 'string', 'max:255'],
+        'status' => ['required', Rule::in(['active', 'inactive'])],
 
-        'daily_rate' => ['nullable', 'numeric', 'min:0'],
-        'overtime_rate_per_hour' => ['nullable', 'numeric', 'min:0'],
-        'late_penalty_per_minute' => ['nullable', 'numeric', 'min:0'],
+        'nik' => ['nullable', 'string', 'max:32'],
+        'npwp' => ['nullable', 'string', 'max:32'],
+        'phone' => ['nullable', 'string', 'max:20'],
+        'address' => ['nullable', 'string', 'max:500'],
+
+        'bank_name' => ['nullable', 'string', 'max:100'],
+        'bank_account_name' => ['nullable', 'string', 'max:100'],
+        'bank_account_number' => ['nullable', 'string', 'max:50'],
+
+        // ✅ pilih algoritma PII (default AES)
+        'pii_alg' => ['nullable', 'in:AES,RSA'],
     ]);
 
-    $base = (float) $data['base_salary'];
-    $allow = (float) ($data['allowance_fixed'] ?? 0);
-    $ded = (float) ($data['deduction_fixed'] ?? 0);
+    $data['user_id'] = null;
 
-    $daily = array_key_exists('daily_rate', $data) ? (float) ($data['daily_rate'] ?? 0) : null;
-    $ot    = array_key_exists('overtime_rate_per_hour', $data) ? (float) ($data['overtime_rate_per_hour'] ?? 0) : null;
-    $late  = array_key_exists('late_penalty_per_minute', $data) ? (float) ($data['late_penalty_per_minute'] ?? 0) : null;
+    $piiAlg = strtoupper((string) ($data['pii_alg'] ?? 'AES'));
 
-    $profile = $employee->salaryProfiles()->create([
-        // plaintext (transisi)
-        'base_salary' => $base,
-        'allowance_fixed' => $allow,
-        'deduction_fixed' => $ded,
-        'daily_rate' => $daily,
-        'overtime_rate_per_hour' => $ot,
-        'late_penalty_per_minute' => $late,
-        'effective_from' => $data['effective_from'],
+    $encPII = function (string $v) use ($piiAlg) {
+        return $piiAlg === 'RSA'
+            ? CryptoService::encryptRSA($v)
+            : CryptoService::encryptAESGCM($v);
+    };
 
-        // ciphertext
-        'base_salary_enc' => CryptoService::encryptAESGCM((string)$base),
-        'allowance_fixed_enc' => CryptoService::encryptAESGCM((string)$allow),
-        'deduction_fixed_enc' => CryptoService::encryptAESGCM((string)$ded),
-        'daily_rate_enc' => $daily !== null ? CryptoService::encryptAESGCM((string)$daily) : null,
-        'overtime_rate_per_hour_enc' => $ot !== null ? CryptoService::encryptAESGCM((string)$ot) : null,
-        'late_penalty_per_minute_enc' => $late !== null ? CryptoService::encryptAESGCM((string)$late) : null,
+    // isi ciphertext kalau ada isinya
+    $data['nik_enc'] = !empty($data['nik']) ? $encPII((string)$data['nik']) : null;
+    $data['npwp_enc'] = !empty($data['npwp']) ? $encPII((string)$data['npwp']) : null;
+    $data['phone_enc'] = !empty($data['phone']) ? $encPII((string)$data['phone']) : null;
+    $data['address_enc'] = !empty($data['address']) ? $encPII((string)$data['address']) : null;
+    $data['bank_account_number_enc'] = !empty($data['bank_account_number']) ? $encPII((string)$data['bank_account_number']) : null;
 
-        'salary_alg' => 'AES',
-        'salary_key_id' => CryptoService::keyId(),
-    ]);
+    // metadata
+    $data['pii_alg'] = $piiAlg;
+    $data['pii_key_id'] = CryptoService::keyId(); // boleh tetap ini dulu
 
+    $employee = Employee::create($data);
+
+    // response aman: jangan kirim PII plaintext dari sini (sesuai index kamu)
     return response()->json([
-        'salary_profile' => $profile,
+        'employee' => [
+            'id' => $employee->id,
+            'employee_code' => $employee->employee_code,
+            'name' => $employee->name,
+            'department' => $employee->department,
+            'position' => $employee->position,
+            'status' => $employee->status,
+            'user_id' => $employee->user_id,
+        ],
     ], 201);
 }
 
-    public function update(Request $request, Employee $employee)
+    public function storeSalaryProfile(Request $request, Employee $employee)
     {
-        $user = $request->user();
-
-        $isPrivileged = in_array($user->role, ['fat', 'director'], true);
-        if (!$isPrivileged) {
-            return response()->json(['message' => 'Forbidden'], 403);
-        }
-
         $data = $request->validate([
-            'employee_code' => [
-                'sometimes', 'string', 'max:50',
-                Rule::unique('employees', 'employee_code')->ignore($employee->id)
-            ],
-            'name' => ['sometimes', 'string', 'max:255'],
-            'department' => ['sometimes', 'nullable', 'string', 'max:255'],
-            'position' => ['sometimes', 'nullable', 'string', 'max:255'],
-            'status' => ['sometimes', Rule::in(['active', 'inactive'])],
+            'base_salary' => ['required', 'numeric', 'min:0'],
+            'allowance_fixed' => ['nullable', 'numeric', 'min:0'],
+            'deduction_fixed' => ['nullable', 'numeric', 'min:0'],
+            'effective_from' => ['required', 'date'],
 
-            'nik' => ['sometimes', 'nullable', 'string', 'max:32'],
-            'npwp' => ['sometimes', 'nullable', 'string', 'max:32'],
-            'phone' => ['sometimes', 'nullable', 'string', 'max:20'],
-            'address' => ['sometimes', 'nullable', 'string', 'max:500'],
+            'daily_rate' => ['nullable', 'numeric', 'min:0'],
+            'overtime_rate_per_hour' => ['nullable', 'numeric', 'min:0'],
+            'late_penalty_per_minute' => ['nullable', 'numeric', 'min:0'],
 
-            'bank_name' => ['sometimes', 'nullable', 'string', 'max:100'],
-            'bank_account_name' => ['sometimes', 'nullable', 'string', 'max:100'],
-            'bank_account_number' => ['sometimes', 'nullable', 'string', 'max:50'],
+            // ✅
+            'salary_alg' => ['nullable', 'in:AES,RSA'],
         ]);
 
-        $employee->update($data);
-                // ✅ kalau admin mengubah "name" employee, sinkron juga ke tabel users
-        if (array_key_exists('name', $data) && $employee->user_id) {
-            User::where('id', $employee->user_id)->update([
-                'name' => $data['name'],
-            ]);
-        }
+        $alg = strtoupper((string) ($data['salary_alg'] ?? 'AES'));
 
+        $enc = function (string $v) use ($alg) {
+            return $alg === 'RSA'
+                ? CryptoService::encryptRSA($v)
+                : CryptoService::encryptAESGCM($v);
+        };
+
+        $base  = (float) $data['base_salary'];
+        $allow = (float) ($data['allowance_fixed'] ?? 0);
+        $ded   = (float) ($data['deduction_fixed'] ?? 0);
+
+        $daily = array_key_exists('daily_rate', $data) ? (float) ($data['daily_rate'] ?? 0) : null;
+        $ot    = array_key_exists('overtime_rate_per_hour', $data) ? (float) ($data['overtime_rate_per_hour'] ?? 0) : null;
+        $late  = array_key_exists('late_penalty_per_minute', $data) ? (float) ($data['late_penalty_per_minute'] ?? 0) : null;
+
+        $profile = $employee->salaryProfiles()->create([
+            // plaintext (transisi)
+            'base_salary' => $base,
+            'allowance_fixed' => $allow,
+            'deduction_fixed' => $ded,
+            'daily_rate' => $daily,
+            'overtime_rate_per_hour' => $ot,
+            'late_penalty_per_minute' => $late,
+            'effective_from' => $data['effective_from'],
+
+            // ciphertext
+            'base_salary_enc' => $enc((string)$base),
+            'allowance_fixed_enc' => $enc((string)$allow),
+            'deduction_fixed_enc' => $enc((string)$ded),
+            'daily_rate_enc' => $daily !== null ? $enc((string)$daily) : null,
+            'overtime_rate_per_hour_enc' => $ot !== null ? $enc((string)$ot) : null,
+            'late_penalty_per_minute_enc' => $late !== null ? $enc((string)$late) : null,
+
+            'salary_alg' => $alg,
+            'salary_key_id' => CryptoService::keyId(),
+        ]);
 
         return response()->json([
-            'message' => 'Employee updated',
-            'employee' => $employee->fresh(),
+            'salary_profile' => $profile,
+        ], 201);
+    }
+
+public function update(Request $request, Employee $employee)
+{
+    $user = $request->user();
+
+    $isPrivileged = in_array($user->role, ['fat', 'director'], true);
+    if (!$isPrivileged) {
+        return response()->json(['message' => 'Forbidden'], 403);
+    }
+
+    $data = $request->validate([
+        'employee_code' => [
+            'sometimes', 'string', 'max:50',
+            Rule::unique('employees', 'employee_code')->ignore($employee->id)
+        ],
+        'name' => ['sometimes', 'string', 'max:255'],
+        'department' => ['sometimes', 'nullable', 'string', 'max:255'],
+        'position' => ['sometimes', 'nullable', 'string', 'max:255'],
+        'status' => ['sometimes', Rule::in(['active', 'inactive'])],
+
+        'nik' => ['sometimes', 'nullable', 'string', 'max:32'],
+        'npwp' => ['sometimes', 'nullable', 'string', 'max:32'],
+        'phone' => ['sometimes', 'nullable', 'string', 'max:20'],
+        'address' => ['sometimes', 'nullable', 'string', 'max:500'],
+
+        'bank_name' => ['sometimes', 'nullable', 'string', 'max:100'],
+        'bank_account_name' => ['sometimes', 'nullable', 'string', 'max:100'],
+        'bank_account_number' => ['sometimes', 'nullable', 'string', 'max:50'],
+
+        // ✅ allow switch alg saat update (opsional)
+        'pii_alg' => ['sometimes', 'in:AES,RSA'],
+    ]);
+
+    $piiAlg = strtoupper((string) ($data['pii_alg'] ?? ($employee->pii_alg ?? 'AES')));
+
+    $encPII = function (string $v) use ($piiAlg) {
+        return $piiAlg === 'RSA'
+            ? CryptoService::encryptRSA($v)
+            : CryptoService::encryptAESGCM($v);
+    };
+
+    // encrypt hanya kalau field dikirim
+    if (array_key_exists('nik', $data)) {
+        $data['nik_enc'] = !empty($data['nik']) ? $encPII((string)$data['nik']) : null;
+    }
+    if (array_key_exists('npwp', $data)) {
+        $data['npwp_enc'] = !empty($data['npwp']) ? $encPII((string)$data['npwp']) : null;
+    }
+    if (array_key_exists('phone', $data)) {
+        $data['phone_enc'] = !empty($data['phone']) ? $encPII((string)$data['phone']) : null;
+    }
+    if (array_key_exists('address', $data)) {
+        $data['address_enc'] = !empty($data['address']) ? $encPII((string)$data['address']) : null;
+    }
+    if (array_key_exists('bank_account_number', $data)) {
+        $data['bank_account_number_enc'] = !empty($data['bank_account_number'])
+            ? $encPII((string)$data['bank_account_number'])
+            : null;
+    }
+
+    // metadata
+    $data['pii_alg'] = $piiAlg;
+    $data['pii_key_id'] = CryptoService::keyId();
+
+    $employee->update($data);
+
+    // ✅ sinkron nama ke users kalau employee sudah linked
+    if (array_key_exists('name', $data) && $employee->user_id) {
+        User::where('id', $employee->user_id)->update([
+            'name' => $data['name'],
         ]);
     }
+
+    return response()->json([
+        'message' => 'Employee updated',
+        'employee' => $employee->fresh(),
+    ]);
+}
 
     public function destroy(Request $request, Employee $employee)
     {

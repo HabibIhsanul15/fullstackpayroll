@@ -22,15 +22,32 @@ function formatIDR(v) {
   }
 }
 
+  function monthToFirstDate(yyyyMM) {
+    if (!yyyyMM) return "";
+    if (/^\d{4}-\d{2}$/.test(yyyyMM)) return `${yyyyMM}-01`;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(yyyyMM)) return yyyyMM;
+    return "";
+  }
+
+  function monthToEndDate(yyyyMM) {
+    if (!/^\d{4}-\d{2}$/.test(yyyyMM)) return "";
+    const [y, m] = yyyyMM.split("-").map(Number);
+    // JS: bulan 1-12, end day = new Date(y, m, 0)
+    const last = new Date(y, m, 0);
+    const yyyy = last.getFullYear();
+    const mm = String(last.getMonth() + 1).padStart(2, "0");
+    const dd = String(last.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
 export default function PayrollCreatePage() {
   const nav = useNavigate();
 
-  const todayISO = useMemo(() => {
+  const thisMonth = useMemo(() => {
     const d = new Date();
     const yyyy = d.getFullYear();
     const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    return `${yyyy}-${mm}-${dd}`;
+    return `${yyyy}-${mm}`; // YYYY-MM
   }, []);
 
   const [employees, setEmployees] = useState([]);
@@ -38,7 +55,7 @@ export default function PayrollCreatePage() {
 
   const [form, setForm] = useState({
     employee_id: "",
-    periode: todayISO,
+    periode: thisMonth,
     gaji_pokok: "",
     tunjangan: "",
     potongan: "",
@@ -63,7 +80,8 @@ export default function PayrollCreatePage() {
   function validate() {
     const e = {};
     if (!form.employee_id) e.employee_id = "Pilih employee dulu.";
-    if (!form.periode) e.periode = "Periode wajib diisi.";
+if (!form.periode) e.periode = "Periode wajib diisi.";
+else if (!/^\d{4}-\d{2}$/.test(form.periode)) e.periode = "Format periode harus YYYY-MM.";
 
     const gp = toNumber(form.gaji_pokok);
     const tj = toNumber(form.tunjangan);
@@ -99,9 +117,11 @@ export default function PayrollCreatePage() {
   }
 
   useEffect(() => {
-    loadEmployees();
+    setProfileInfo(null);
+    setServerError("");
+    setOk("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [form.employee_id, form.periode]);
 
   async function handleGenerateFromProfile() {
     setServerError("");
@@ -115,7 +135,12 @@ export default function PayrollCreatePage() {
 
     setLoadingProfile(true);
     try {
-      const data = await fetchCurrentSalaryProfile(form.employee_id, form.periode);
+    const data = await fetchCurrentSalaryProfile(
+      form.employee_id,
+      monthToEndDate(form.periode) // ✅ pakai akhir bulan
+    );
+
+
       setProfileInfo(data);
 
       setField("gaji_pokok", String(data?.base_salary ?? "0"));
@@ -141,7 +166,7 @@ export default function PayrollCreatePage() {
     try {
       const payload = {
         employee_id: Number(form.employee_id),
-        periode: form.periode,
+        periode: monthToFirstDate(form.periode), // YYYY-MM-01
         gaji_pokok: toNumber(form.gaji_pokok),
         tunjangan: toNumber(form.tunjangan),
         potongan: toNumber(form.potongan),
@@ -149,7 +174,7 @@ export default function PayrollCreatePage() {
       };
 
       const data = await createPayroll(payload);
-      const payrollId = data?.payroll?.id ?? data?.id;
+      const payrollId = data?.data?.id ?? data?.payroll?.id ?? data?.id;
 
       setOk("Payroll berhasil dibuat.");
 
@@ -311,7 +336,7 @@ export default function PayrollCreatePage() {
                 <div className="md:col-span-5">
                   <label className="text-sm font-semibold text-slate-800">Periode</label>
                   <input
-                    type="date"
+                    type="month"
                     value={form.periode}
                     onChange={(e) => setField("periode", e.target.value)}
                     className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-indigo-300 focus:ring-4 focus:ring-indigo-200/40"

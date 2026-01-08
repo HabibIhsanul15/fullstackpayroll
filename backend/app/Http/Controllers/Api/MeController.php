@@ -51,19 +51,18 @@ class MeController extends Controller
             return response()->json(['message' => 'Akun ini belum terhubung ke data employee.'], 404);
         }
 
-        // ✅ decrypt kalau tersedia, fallback ke plaintext (mode transisi)
-        $emp->nik = $emp->nik_enc ? CryptoService::decryptAESGCM($emp->nik_enc) : $emp->nik;
-        $emp->npwp = $emp->npwp_enc ? CryptoService::decryptAESGCM($emp->npwp_enc) : $emp->npwp;
+        $alg = strtoupper((string) ($emp->pii_alg ?? 'AES'));
 
-        $emp->bank_account_number = $emp->bank_account_number_enc
-            ? CryptoService::decryptAESGCM($emp->bank_account_number_enc)
-            : $emp->bank_account_number;
+        $emp->nik = CryptoService::readEncryptedOrPlain($emp->nik_enc, $emp->nik, $alg);
+        $emp->npwp = CryptoService::readEncryptedOrPlain($emp->npwp_enc, $emp->npwp, $alg);
+        $emp->bank_account_number = CryptoService::readEncryptedOrPlain(
+            $emp->bank_account_number_enc,
+            $emp->bank_account_number,
+            $alg
+        );
+        $emp->phone = CryptoService::readEncryptedOrPlain($emp->phone_enc, $emp->phone, $alg);
+        $emp->address = CryptoService::readEncryptedOrPlain($emp->address_enc, $emp->address, $alg);
 
-        // opsional kalau kamu ikut encrypt phone & address
-        $emp->phone = $emp->phone_enc ? CryptoService::decryptAESGCM($emp->phone_enc) : $emp->phone;
-        $emp->address = $emp->address_enc ? CryptoService::decryptAESGCM($emp->address_enc) : $emp->address;
-
-        // ✅ jangan kirim ciphertext ke frontend
         unset(
             $emp->nik_enc,
             $emp->npwp_enc,
@@ -102,56 +101,58 @@ class MeController extends Controller
             'bank_name' => ['sometimes', 'nullable', 'string', 'max:100'],
             'bank_account_name' => ['sometimes', 'nullable', 'string', 'max:150'],
             'bank_account_number' => ['sometimes', 'nullable', 'string', 'max:50'],
+
+            // optional kalau kamu mau staff bisa pilih alg:
+            // 'pii_alg' => ['sometimes', 'in:AES,RSA'],
         ]);
 
-        // ✅ ENCRYPT hanya field yang memang ikut dikirim
+        $piiAlg = strtoupper((string) ($emp->pii_alg ?? 'AES'));
+
+        $encPII = function (string $v) use ($piiAlg) {
+            return $piiAlg === 'RSA'
+                ? CryptoService::encryptRSA($v)
+                : CryptoService::encryptAESGCM($v);
+        };
+
         if (array_key_exists('nik', $data)) {
-            $data['nik_enc'] = !empty($data['nik']) ? CryptoService::encryptAESGCM((string)$data['nik']) : null;
+            $data['nik_enc'] = !empty($data['nik']) ? $encPII((string)$data['nik']) : null;
         }
-
         if (array_key_exists('npwp', $data)) {
-            $data['npwp_enc'] = !empty($data['npwp']) ? CryptoService::encryptAESGCM((string)$data['npwp']) : null;
+            $data['npwp_enc'] = !empty($data['npwp']) ? $encPII((string)$data['npwp']) : null;
         }
-
         if (array_key_exists('bank_account_number', $data)) {
             $data['bank_account_number_enc'] = !empty($data['bank_account_number'])
-                ? CryptoService::encryptAESGCM((string)$data['bank_account_number'])
+                ? $encPII((string)$data['bank_account_number'])
                 : null;
         }
-
-        // opsional: kalau ikut encrypt phone & address
         if (array_key_exists('phone', $data)) {
-            $data['phone_enc'] = !empty($data['phone']) ? CryptoService::encryptAESGCM((string)$data['phone']) : null;
+            $data['phone_enc'] = !empty($data['phone']) ? $encPII((string)$data['phone']) : null;
         }
-
         if (array_key_exists('address', $data)) {
-            $data['address_enc'] = !empty($data['address']) ? CryptoService::encryptAESGCM((string)$data['address']) : null;
+            $data['address_enc'] = !empty($data['address']) ? $encPII((string)$data['address']) : null;
         }
 
-        // metadata enkripsi
-        $data['pii_alg'] = 'AES';
+        // metadata
+        $data['pii_alg'] = $piiAlg;
         $data['pii_key_id'] = CryptoService::keyId();
 
-        // ✅ baru update
         $emp->update($data);
 
-        // sync nama user
         if (array_key_exists('name', $data)) {
             $u->update(['name' => $data['name']]);
         }
 
-        // ✅ response: balikin plaintext yang sudah didecrypt (biar FE tampil normal)
         $fresh = $emp->fresh();
 
-        $fresh->nik = $fresh->nik_enc ? CryptoService::decryptAESGCM($fresh->nik_enc) : $fresh->nik;
-        $fresh->npwp = $fresh->npwp_enc ? CryptoService::decryptAESGCM($fresh->npwp_enc) : $fresh->npwp;
-
-        $fresh->bank_account_number = $fresh->bank_account_number_enc
-            ? CryptoService::decryptAESGCM($fresh->bank_account_number_enc)
-            : $fresh->bank_account_number;
-
-        $fresh->phone = $fresh->phone_enc ? CryptoService::decryptAESGCM($fresh->phone_enc) : $fresh->phone;
-        $fresh->address = $fresh->address_enc ? CryptoService::decryptAESGCM($fresh->address_enc) : $fresh->address;
+        $fresh->nik = CryptoService::readEncryptedOrPlain($fresh->nik_enc, $fresh->nik, $piiAlg);
+        $fresh->npwp = CryptoService::readEncryptedOrPlain($fresh->npwp_enc, $fresh->npwp, $piiAlg);
+        $fresh->bank_account_number = CryptoService::readEncryptedOrPlain(
+            $fresh->bank_account_number_enc,
+            $fresh->bank_account_number,
+            $piiAlg
+        );
+        $fresh->phone = CryptoService::readEncryptedOrPlain($fresh->phone_enc, $fresh->phone, $piiAlg);
+        $fresh->address = CryptoService::readEncryptedOrPlain($fresh->address_enc, $fresh->address, $piiAlg);
 
         unset(
             $fresh->nik_enc,

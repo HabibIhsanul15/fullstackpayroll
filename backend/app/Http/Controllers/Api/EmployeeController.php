@@ -38,12 +38,76 @@ class EmployeeController extends Controller
             return $this->forbid();
         }
 
-        $qStatus = $request->query('status'); // active/inactive/null
-        $query = Employee::query()->orderBy('name');
+        // ===== query params =====
+        $q       = trim((string) $request->query('q', ''));
+        $status  = strtolower((string) $request->query('status', 'all'));
+        $sortBy  = (string) $request->query('sort_by', 'name');
+        $sortDir = strtolower((string) $request->query('sort_dir', 'asc')) === 'desc' ? 'desc' : 'asc';
 
-        if ($qStatus) {
-            $query->where('status', $qStatus);
+        // filter salary profile (optional)
+        // has_salary_profile = 1 / 0 / true / false (string)
+        $hasSalaryRaw = $request->query('has_salary_profile', null);
+        // date untuk menentukan salary profile yang "aktif" (minimal effective_from <= date)
+        $date = $request->query('date', null); // contoh: 2026-01-01
+
+        // ===== whitelist sort (AMAN) =====
+        $allowedSort = ['employee_code', 'name', 'department', 'position', 'status', 'created_at'];
+        if (!in_array($sortBy, $allowedSort, true)) {
+            $sortBy = 'name';
         }
+
+        $query = Employee::query();
+
+        // ===== add flag: has_salary_profile (berdasarkan date jika dikirim) =====
+        $query->withExists([
+            'salaryProfiles as has_salary_profile' => function ($sp) use ($date) {
+                if ($date) {
+                    $sp->whereDate('effective_from', '<=', $date);
+                }
+            }
+        ]);
+
+        // ===== SEARCH =====
+        if ($q !== '') {
+            $query->where(function ($w) use ($q) {
+                $w->where('employee_code', 'like', "%{$q}%")
+                    ->orWhere('name', 'like', "%{$q}%")
+                    ->orWhere('department', 'like', "%{$q}%")
+                    ->orWhere('position', 'like', "%{$q}%");
+            });
+        }
+
+        // ===== FILTER STATUS =====
+        if ($status !== 'all' && $status !== '') {
+            $query->where('status', $status);
+        }
+
+        // ===== FILTER has_salary_profile (optional) =====
+        if ($hasSalaryRaw !== null && $hasSalaryRaw !== '') {
+            $bool = filter_var($hasSalaryRaw, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+            if ($bool === null) $bool = ((string)$hasSalaryRaw === '1'); // fallback
+
+            if ($bool) {
+                $query->whereHas('salaryProfiles', function ($sp) use ($date) {
+                    if ($date) {
+                        $sp->whereDate('effective_from', '<=', $date);
+                    }
+                });
+            } else {
+                // "yang belum punya salary"
+                if ($date) {
+                    // belum punya salary berlaku sampai date tsb
+                    $query->whereDoesntHave('salaryProfiles', function ($sp) use ($date) {
+                        $sp->whereDate('effective_from', '<=', $date);
+                    });
+                } else {
+                    $query->whereDoesntHave('salaryProfiles');
+                }
+            }
+        }
+
+        // ===== SORT =====
+        $query->orderBy($sortBy, $sortDir);
 
         return $query->get([
             'id',
@@ -53,6 +117,7 @@ class EmployeeController extends Controller
             'position',
             'status',
             'user_id',
+            // kolom has_salary_profile akan ikut kebawa dari withExists
         ]);
     }
 
@@ -225,145 +290,155 @@ class EmployeeController extends Controller
         }
 
         $alg = strtoupper((string) ($profile->salary_alg ?? 'AES'));
+        if (!in_array($alg, ['AES', 'RSA', 'HYBRID'], true)) {
+            $alg = 'AES';
+        }
 
-        $base  = $profile->base_salary_enc ? (float) CryptoService::decryptByAlg($profile->base_salary_enc, $alg) : (float) $profile->base_salary;
-        $allow = $profile->allowance_fixed_enc ? (float) CryptoService::decryptByAlg($profile->allowance_fixed_enc, $alg) : (float) $profile->allowance_fixed;
-        $ded   = $profile->deduction_fixed_enc ? (float) CryptoService::decryptByAlg($profile->deduction_fixed_enc, $alg) : (float) $profile->deduction_fixed;
+        // decrypt jika enc ada, fallback ke plaintext
+        $base = $profile->base_salary_enc
+            ? (float) CryptoService::decryptSalaryValue($profile->base_salary_enc, $alg, $profile->salary_key_id)
+            : (float) $profile->base_salary;
+
+        $allow = $profile->allowance_fixed_enc
+            ? (float) CryptoService::decryptSalaryValue($profile->allowance_fixed_enc, $alg, $profile->salary_key_id)
+            : (float) $profile->allowance_fixed;
+
+        $ded = $profile->deduction_fixed_enc
+            ? (float) CryptoService::decryptSalaryValue($profile->deduction_fixed_enc, $alg, $profile->salary_key_id)
+            : (float) $profile->deduction_fixed;
 
         return response()->json([
             'employee_id' => $employee->id,
-            'effective_from' => $profile->effective_from->toDateString(),
+            'effective_from' => optional($profile->effective_from)->toDateString(),
             'base_salary' => (string) $base,
             'allowance_fixed' => (string) $allow,
             'deduction_fixed' => (string) $ded,
             'suggested_total' => (string) ($base + $allow - $ded),
-        ]);
-    }
 
-    public function store(Request $request)
-    {
-        $user = $request->user();
-
-        // create employee: hanya HCGA
-        if (!$this->inRoles($user, ['hcga'])) {
-            return $this->forbid();
-        }
-
-        $data = $request->validate([
-            'employee_code' => ['required', 'string', 'max:50', 'unique:employees,employee_code'],
-            'name' => ['required', 'string', 'max:255'],
-            'department' => ['nullable', 'string', 'max:255'],
-            'position' => ['nullable', 'string', 'max:255'],
-            'status' => ['required', Rule::in(['active', 'inactive'])],
-
-            'nik' => ['nullable', 'string', 'max:32'],
-            'npwp' => ['nullable', 'string', 'max:32'],
-            'phone' => ['nullable', 'string', 'max:20'],
-            'address' => ['nullable', 'string', 'max:500'],
-
-            'bank_name' => ['nullable', 'string', 'max:100'],
-            'bank_account_name' => ['nullable', 'string', 'max:100'],
-            'bank_account_number' => ['nullable', 'string', 'max:50'],
-
-            'pii_alg' => ['nullable', 'in:AES,RSA'],
-        ]);
-
-        $data['user_id'] = null;
-
-        $piiAlg = strtoupper((string) ($data['pii_alg'] ?? 'AES'));
-
-        $encPII = function (string $v) use ($piiAlg) {
-            return $piiAlg === 'RSA'
-                ? CryptoService::encryptRSA($v)
-                : CryptoService::encryptAESGCM($v);
-        };
-
-        $data['nik_enc'] = !empty($data['nik']) ? $encPII((string) $data['nik']) : null;
-        $data['npwp_enc'] = !empty($data['npwp']) ? $encPII((string) $data['npwp']) : null;
-        $data['phone_enc'] = !empty($data['phone']) ? $encPII((string) $data['phone']) : null;
-        $data['address_enc'] = !empty($data['address']) ? $encPII((string) $data['address']) : null;
-        $data['bank_account_number_enc'] = !empty($data['bank_account_number']) ? $encPII((string) $data['bank_account_number']) : null;
-
-        $data['pii_alg'] = $piiAlg;
-        $data['pii_key_id'] = CryptoService::keyId();
-
-        $employee = Employee::create($data);
-
-        return response()->json([
-            'employee' => [
-                'id' => $employee->id,
-                'employee_code' => $employee->employee_code,
-                'name' => $employee->name,
-                'department' => $employee->department,
-                'position' => $employee->position,
-                'status' => $employee->status,
-                'user_id' => $employee->user_id,
-            ],
-        ], 201);
-    }
-
-    public function storeSalaryProfile(Request $request, Employee $employee)
-    {
-        $user = $request->user();
-
-        // SET SALARY: hanya HCGA
-        if (!$this->inRoles($user, ['hcga'])) {
-            return $this->forbid();
-        }
-
-        $data = $request->validate([
-            'base_salary' => ['required', 'numeric', 'min:0'],
-            'allowance_fixed' => ['nullable', 'numeric', 'min:0'],
-            'deduction_fixed' => ['nullable', 'numeric', 'min:0'],
-            'effective_from' => ['required', 'date'],
-
-            'daily_rate' => ['nullable', 'numeric', 'min:0'],
-            'overtime_rate_per_hour' => ['nullable', 'numeric', 'min:0'],
-            'late_penalty_per_minute' => ['nullable', 'numeric', 'min:0'],
-
-            'salary_alg' => ['nullable', 'in:AES,RSA'],
-        ]);
-
-        $alg = strtoupper((string) ($data['salary_alg'] ?? 'AES'));
-
-        $enc = function (string $v) use ($alg) {
-            return $alg === 'RSA'
-                ? CryptoService::encryptRSA($v)
-                : CryptoService::encryptAESGCM($v);
-        };
-
-        $base  = (float) $data['base_salary'];
-        $allow = (float) ($data['allowance_fixed'] ?? 0);
-        $ded   = (float) ($data['deduction_fixed'] ?? 0);
-
-        $daily = array_key_exists('daily_rate', $data) ? (float) ($data['daily_rate'] ?? 0) : null;
-        $ot    = array_key_exists('overtime_rate_per_hour', $data) ? (float) ($data['overtime_rate_per_hour'] ?? 0) : null;
-        $late  = array_key_exists('late_penalty_per_minute', $data) ? (float) ($data['late_penalty_per_minute'] ?? 0) : null;
-
-        $profile = $employee->salaryProfiles()->create([
-            'base_salary' => $base,
-            'allowance_fixed' => $allow,
-            'deduction_fixed' => $ded,
-            'daily_rate' => $daily,
-            'overtime_rate_per_hour' => $ot,
-            'late_penalty_per_minute' => $late,
-            'effective_from' => $data['effective_from'],
-
-            'base_salary_enc' => $enc((string) $base),
-            'allowance_fixed_enc' => $enc((string) $allow),
-            'deduction_fixed_enc' => $enc((string) $ded),
-            'daily_rate_enc' => $daily !== null ? $enc((string) $daily) : null,
-            'overtime_rate_per_hour_enc' => $ot !== null ? $enc((string) $ot) : null,
-            'late_penalty_per_minute_enc' => $late !== null ? $enc((string) $late) : null,
-
+            // metadata (buat TA / debugging)
             'salary_alg' => $alg,
-            'salary_key_id' => CryptoService::keyId(),
+            'salary_key_id' => $profile->salary_key_id,
         ]);
-
-        return response()->json([
-            'salary_profile' => $profile,
-        ], 201);
     }
+
+        public function store(Request $request)
+        {
+            $user = $request->user();
+
+            // create employee: hanya HCGA
+            if (!$this->inRoles($user, ['hcga'])) {
+                return $this->forbid();
+            }
+
+            $data = $request->validate([
+                'employee_code' => ['required', 'string', 'max:50', 'unique:employees,employee_code'],
+                'name' => ['required', 'string', 'max:255'],
+                'department' => ['nullable', 'string', 'max:255'],
+                'position' => ['nullable', 'string', 'max:255'],
+                'status' => ['required', Rule::in(['active', 'inactive'])],
+
+                'nik' => ['nullable', 'string', 'max:32'],
+                'npwp' => ['nullable', 'string', 'max:32'],
+                'phone' => ['nullable', 'string', 'max:20'],
+                'address' => ['nullable', 'string', 'max:500'],
+
+                'bank_name' => ['nullable', 'string', 'max:100'],
+                'bank_account_name' => ['nullable', 'string', 'max:100'],
+                'bank_account_number' => ['nullable', 'string', 'max:50'],
+
+                'pii_alg' => ['nullable', 'in:AES,RSA'],
+            ]);
+
+            $data['user_id'] = null;
+
+            $piiAlg = strtoupper((string) ($data['pii_alg'] ?? 'AES'));
+
+            $encPII = function (string $v) use ($piiAlg) {
+                return $piiAlg === 'RSA'
+                    ? CryptoService::encryptRSA($v)
+                    : CryptoService::encryptAESGCM($v);
+            };
+
+            $data['nik_enc'] = !empty($data['nik']) ? $encPII((string) $data['nik']) : null;
+            $data['npwp_enc'] = !empty($data['npwp']) ? $encPII((string) $data['npwp']) : null;
+            $data['phone_enc'] = !empty($data['phone']) ? $encPII((string) $data['phone']) : null;
+            $data['address_enc'] = !empty($data['address']) ? $encPII((string) $data['address']) : null;
+            $data['bank_account_number_enc'] = !empty($data['bank_account_number']) ? $encPII((string) $data['bank_account_number']) : null;
+
+            $data['pii_alg'] = $piiAlg;
+            $data['pii_key_id'] = CryptoService::keyId();
+
+            $employee = Employee::create($data);
+
+            return response()->json([
+                'employee' => [
+                    'id' => $employee->id,
+                    'employee_code' => $employee->employee_code,
+                    'name' => $employee->name,
+                    'department' => $employee->department,
+                    'position' => $employee->position,
+                    'status' => $employee->status,
+                    'user_id' => $employee->user_id,
+                ],
+            ], 201);
+        }
+
+public function storeSalaryProfile(Request $request, Employee $employee)
+{
+    $user = $request->user();
+    if (!$this->inRoles($user, ['hcga'])) return $this->forbid();
+
+    $data = $request->validate([
+        'base_salary' => ['required', 'numeric', 'min:0'],
+        'allowance_fixed' => ['nullable', 'numeric', 'min:0'],
+        'deduction_fixed' => ['nullable', 'numeric', 'min:0'],
+        'effective_from' => ['required', 'date'],
+        'salary_alg' => ['nullable', 'in:AES,RSA,HYBRID'],
+    ]);
+
+    $alg = strtoupper((string)($data['salary_alg'] ?? 'AES'));
+    if (!in_array($alg, ['AES','RSA','HYBRID'], true)) $alg = 'AES';
+
+    $base  = (float) $data['base_salary'];
+    $allow = (float) ($data['allowance_fixed'] ?? 0);
+    $ded   = (float) ($data['deduction_fixed'] ?? 0);
+
+    // cari profile untuk effective_from ini (atau current profile pada tanggal itu)
+    $effective = $data['effective_from'];
+    $existing = $employee->salaryProfiles()
+        ->whereDate('effective_from', '=', $effective)
+        ->first();
+
+    $salaryKeyId = $existing?->salary_key_id; // kalau HYBRID dan mau pakai key lama
+    [$baseEnc,  $salaryKeyId, $algNorm] = CryptoService::encryptSalaryValue((string)$base,  $alg, $salaryKeyId);
+    [$allowEnc, $salaryKeyId, $algNorm] = CryptoService::encryptSalaryValue((string)$allow, $alg, $salaryKeyId);
+    [$dedEnc,   $salaryKeyId, $algNorm] = CryptoService::encryptSalaryValue((string)$ded,   $alg, $salaryKeyId);
+
+    $payload = [
+        'base_salary' => $base,
+        'allowance_fixed' => $allow,
+        'deduction_fixed' => $ded,
+        'effective_from' => $effective,
+
+        'base_salary_enc' => $baseEnc,
+        'allowance_fixed_enc' => $allowEnc,
+        'deduction_fixed_enc' => $dedEnc,
+
+        'salary_alg' => $algNorm,
+        'salary_key_id' => $salaryKeyId,
+    ];
+
+    if ($existing) {
+        $existing->update($payload);
+        $profile = $existing->fresh();
+        $status = 200;
+    } else {
+        $profile = $employee->salaryProfiles()->create($payload);
+        $status = 201;
+    }
+
+    return response()->json(['salary_profile' => $profile], $status);
+}
 
     public function update(Request $request, Employee $employee)
     {

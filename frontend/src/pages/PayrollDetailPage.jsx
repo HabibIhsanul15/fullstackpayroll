@@ -257,15 +257,22 @@ export default function PayrollDetailPage() {
             </Button>
 
             {/* PDF */}
-            <Button
-              variant="outline"
-              onClick={() => row?.id && openPayrollPdf(row.id)}
-              disabled={!row || row.masked || pdfLoading}
-              className="rounded-2xl bg-white/70 backdrop-blur border-slate-200 hover:bg-white"
-              title={row?.masked ? "Tidak punya akses melihat nominal" : "Buka PDF di tab baru"}
-            >
-              {pdfLoading ? "Membuka PDF..." : "Buka PDF (Print)"}
-            </Button>
+            {/* PDF: hanya tampil kalau PAID */}
+            {row?.id && isPaid && (
+              <Button
+                variant="outline"
+                onClick={() => openPayrollPdf(row.id)}
+                disabled={row.masked || pdfLoading}
+                className="rounded-2xl bg-white/70 backdrop-blur border-slate-200 hover:bg-white"
+                title={
+                  row?.masked
+                    ? "Tidak punya akses melihat nominal"
+                    : "Buka PDF di tab baru"
+                }
+              >
+                {pdfLoading ? "Membuka PDF..." : "Buka PDF (Print)"}
+              </Button>
+            )}
 
             {/* ✅ Bukti Transfer (hanya muncul kalau PAID) */}
             {row?.id && isPaid && (

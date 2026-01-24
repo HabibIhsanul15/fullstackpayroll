@@ -32,7 +32,6 @@ function monthToFirstDate(yyyyMM) {
 function monthToEndDate(yyyyMM) {
   if (!/^\d{4}-\d{2}$/.test(yyyyMM)) return "";
   const [y, m] = yyyyMM.split("-").map(Number);
-  // JS: bulan 1-12, end day = new Date(y, m, 0)
   const last = new Date(y, m, 0);
   const yyyy = last.getFullYear();
   const mm = String(last.getMonth() + 1).padStart(2, "0");
@@ -47,7 +46,7 @@ export default function PayrollCreatePage() {
     const d = new Date();
     const yyyy = d.getFullYear();
     const mm = String(d.getMonth() + 1).padStart(2, "0");
-    return `${yyyy}-${mm}`; // YYYY-MM
+    return `${yyyy}-${mm}`;
   }, []);
 
   const [employees, setEmployees] = useState([]);
@@ -70,8 +69,10 @@ export default function PayrollCreatePage() {
   const [serverError, setServerError] = useState("");
   const [ok, setOk] = useState("");
 
-  // ✅ Opsi 2: boleh pilih "Save draft" atau "Save & request"
-  // Default ON supaya alur approval jalan otomatis.
+  // ✅ default: hanya tampil employee yang salary profile sudah diset
+  const [onlyHasSalary, setOnlyHasSalary] = useState(true);
+
+  // ✅ draft / request
   const [autoRequest, setAutoRequest] = useState(true);
 
   function setField(key, value) {
@@ -107,12 +108,39 @@ export default function PayrollCreatePage() {
     return gp + tj - pt;
   }, [form.gaji_pokok, form.tunjangan, form.potongan]);
 
-  async function loadEmployees() {
+  async function loadEmployees(opts = {}) {
+    const { periode = form.periode, only = onlyHasSalary } = opts;
+
     setLoadingEmp(true);
     setServerError("");
     try {
-      const data = await fetchEmployeesLite("active");
-      setEmployees(Array.isArray(data) ? data : []);
+      const date = monthToEndDate(periode); // ✅ penting: cari salary aktif sampai akhir bulan
+      const params = {
+        status: "active",
+        sort_by: "employee_code",
+        sort_dir: "asc",
+        date,
+        // kalau onlyHasSalary true => filter hanya yang punya salary
+        ...(only ? { has_salary_profile: 1 } : {}),
+      };
+
+      const data = await fetchEmployeesLite(params);
+
+      const rows = Array.isArray(data) ? data : data?.data ?? [];
+      setEmployees(rows);
+
+      // kalau employee yang dipilih sudah tidak ada di list (misal ganti periode),
+      // reset selection supaya gak nyangkut
+      if (form.employee_id) {
+        const stillExists = rows.some((x) => String(x.id) === String(form.employee_id));
+        if (!stillExists) {
+          setField("employee_id", "");
+          setProfileInfo(null);
+          setField("gaji_pokok", "");
+          setField("tunjangan", "");
+          setField("potongan", "");
+        }
+      }
     } catch (e) {
       setServerError(e?.message || "Gagal mengambil employees.");
       setEmployees([]);
@@ -121,11 +149,19 @@ export default function PayrollCreatePage() {
     }
   }
 
+  // initial load
   useEffect(() => {
-    loadEmployees();
+    loadEmployees({ periode: form.periode, only: onlyHasSalary });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // reload employees tiap periode berubah atau toggle onlyHasSalary berubah
+  useEffect(() => {
+    loadEmployees({ periode: form.periode, only: onlyHasSalary });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.periode, onlyHasSalary]);
+
+  // reset profile info when employee/periode changes
   useEffect(() => {
     setProfileInfo(null);
     setServerError("");
@@ -147,7 +183,7 @@ export default function PayrollCreatePage() {
     try {
       const data = await fetchCurrentSalaryProfile(
         form.employee_id,
-        monthToEndDate(form.periode) // ✅ pakai akhir bulan
+        monthToEndDate(form.periode)
       );
 
       setProfileInfo(data);
@@ -175,13 +211,11 @@ export default function PayrollCreatePage() {
     try {
       const payload = {
         employee_id: Number(form.employee_id),
-        periode: monthToFirstDate(form.periode), // YYYY-MM-01
+        periode: monthToFirstDate(form.periode),
         gaji_pokok: toNumber(form.gaji_pokok),
         tunjangan: toNumber(form.tunjangan),
         potongan: toNumber(form.potongan),
         catatan: form.catatan || null,
-
-        // ✅ Opsi 2: kirim flag ke backend
         auto_request: autoRequest,
       };
 
@@ -205,9 +239,7 @@ export default function PayrollCreatePage() {
       if (p?.errors) {
         const mapped = {};
         for (const k of Object.keys(p.errors)) {
-          mapped[k] = Array.isArray(p.errors[k])
-            ? p.errors[k][0]
-            : String(p.errors[k]);
+          mapped[k] = Array.isArray(p.errors[k]) ? p.errors[k][0] : String(p.errors[k]);
         }
         setErrors(mapped);
       } else {
@@ -218,9 +250,18 @@ export default function PayrollCreatePage() {
     }
   }
 
+  const employeeEmptyText = useMemo(() => {
+    if (loadingEmp) return "Loading...";
+    if (!employees.length) {
+      return onlyHasSalary
+        ? "Tidak ada employee aktif yang sudah set salary (periode ini)."
+        : "Tidak ada employee aktif.";
+    }
+    return "-- pilih employee --";
+  }, [loadingEmp, employees.length, onlyHasSalary]);
+
   return (
     <div className="relative">
-      {/* soft background selaras payroll list/edit */}
       <div className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
         <div className="absolute -top-40 -left-40 h-[520px] w-[520px] rounded-full bg-sky-200/50 blur-3xl" />
         <div className="absolute -bottom-44 -right-44 h-[620px] w-[620px] rounded-full bg-indigo-200/45 blur-3xl" />
@@ -228,7 +269,6 @@ export default function PayrollCreatePage() {
       </div>
 
       <div className="space-y-6">
-        {/* Header */}
         <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
           <div>
             <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/70 px-4 py-2 shadow-sm">
@@ -242,7 +282,7 @@ export default function PayrollCreatePage() {
               Create Payroll
             </h1>
             <p className="mt-1 text-sm text-slate-600">
-              Pilih employee & periode, generate dari salary profile, lalu simpan payroll.
+              Pilih employee & periode. Dropdown employee otomatis hanya menampilkan yang salary-nya sudah diset.
             </p>
           </div>
 
@@ -267,7 +307,6 @@ export default function PayrollCreatePage() {
           </div>
         </div>
 
-        {/* Alerts */}
         {serverError && (
           <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
             {serverError}
@@ -279,7 +318,6 @@ export default function PayrollCreatePage() {
           </div>
         )}
 
-        {/* Form Card */}
         <div className="rounded-3xl border border-slate-200 bg-white/75 backdrop-blur-xl shadow-[0_16px_50px_rgba(2,6,23,0.06)] overflow-hidden">
           <div className="px-6 py-5 border-b border-slate-200/70 flex items-center justify-between">
             <div>
@@ -295,7 +333,7 @@ export default function PayrollCreatePage() {
               <Button
                 type="button"
                 variant="outline"
-                onClick={loadEmployees}
+                onClick={() => loadEmployees({ periode: form.periode, only: onlyHasSalary })}
                 disabled={saving}
                 className="rounded-2xl border-slate-200 bg-white hover:bg-slate-50"
               >
@@ -316,56 +354,81 @@ export default function PayrollCreatePage() {
 
           <div className="p-6">
             <form id="create-payroll-form" onSubmit={handleSubmit} className="space-y-6">
-              {/* Employee + Periode */}
-              <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-                <div className="md:col-span-7">
-                  <label className="text-sm font-semibold text-slate-800">
-                    Employee (Active)
-                  </label>
+          {/* Employee + Periode (SEJAJAR) */}
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
+            {/* EMPLOYEE */}
+            <div className="md:col-span-7">
+              <label className="text-sm font-semibold text-slate-800">
+                Employee (Active)
+              </label>
 
-                  <select
-                    value={form.employee_id}
-                    onChange={(e) => setField("employee_id", e.target.value)}
-                    disabled={loadingEmp}
-                    className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-sky-300 focus:ring-4 focus:ring-sky-200/40"
-                  >
-                    <option value="">
-                      {loadingEmp
-                        ? "Loading..."
-                        : employees.length
-                        ? "-- pilih employee --"
-                        : "Tidak ada employee active"}
-                    </option>
-
-                    {employees.map((emp) => (
-                      <option key={emp.id} value={emp.id}>
-                        {emp.employee_code} — {emp.name}
-                      </option>
-                    ))}
-                  </select>
-
-                  {errors.employee_id && (
-                    <div className="mt-2 text-sm text-rose-700">
-                      {errors.employee_id}
-                    </div>
-                  )}
-                </div>
-
-                <div className="md:col-span-5">
-                  <label className="text-sm font-semibold text-slate-800">Periode</label>
+              <div className="mt-2 flex flex-wrap items-center gap-3">
+                <label className="inline-flex items-center gap-2 text-sm text-slate-700 select-none">
                   <input
-                    type="month"
-                    value={form.periode}
-                    onChange={(e) => setField("periode", e.target.value)}
-                    className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-indigo-300 focus:ring-4 focus:ring-indigo-200/40"
+                    type="checkbox"
+                    checked={onlyHasSalary}
+                    onChange={(e) => setOnlyHasSalary(e.target.checked)}
+                    disabled={loadingEmp || saving}
                   />
-                  {errors.periode && (
-                    <div className="mt-2 text-sm text-rose-700">{errors.periode}</div>
-                  )}
-                </div>
+                  Tampilkan hanya yang salary sudah diset (periode ini)
+                </label>
+
+                {!onlyHasSalary && (
+                  <span className="text-xs text-slate-500">(❌ = belum set salary)</span>
+                )}
               </div>
 
-              {/* Salary profile info */}
+              <select
+                value={form.employee_id}
+                onChange={(e) => setField("employee_id", e.target.value)}
+                disabled={loadingEmp}
+                className="mt-3 w-full h-12 rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-900 outline-none transition focus:border-sky-300 focus:ring-4 focus:ring-sky-200/40"
+              >
+                <option value="">{employeeEmptyText}</option>
+
+                {employees.map((emp) => {
+                  const hasSalary =
+                    emp?.has_salary_profile === true ||
+                    emp?.has_salary_profile === 1 ||
+                    emp?.has_salary_profile === "1";
+
+                  return (
+                    <option key={emp.id} value={emp.id}>
+                      {emp.employee_code} — {emp.name}
+                      {!onlyHasSalary ? ` ${hasSalary ? "✅" : "❌ (No salary)"}` : ""}
+                    </option>
+                  );
+                })}
+              </select>
+
+              {errors.employee_id && (
+                <div className="mt-2 text-sm text-rose-700">{errors.employee_id}</div>
+              )}
+
+              {onlyHasSalary && !loadingEmp && employees.length === 0 && (
+                <div className="mt-2 text-xs text-slate-500">
+                  Tips: matikan filter “hanya yang salary sudah diset” untuk cek siapa yang belum diset.
+                </div>
+              )}
+            </div>
+
+            {/* PERIODE */}
+            <div className="md:col-span-5">
+              <label className="text-sm font-semibold text-slate-800">Periode</label>
+
+              <input
+                type="month"
+                value={form.periode}
+                onChange={(e) => setField("periode", e.target.value)}
+                className="mt-2 w-full h-12 rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-900 outline-none transition focus:border-indigo-300 focus:ring-4 focus:ring-indigo-200/40"
+              />
+
+              {errors.periode && (
+                <div className="mt-2 text-sm text-rose-700">{errors.periode}</div>
+              )}
+            </div>
+          </div>
+
               {profileInfo && (
                 <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-5 py-4 text-sm text-slate-700">
                   <div className="font-extrabold text-slate-900 mb-2">
@@ -379,7 +442,6 @@ export default function PayrollCreatePage() {
                 </div>
               )}
 
-              {/* Payroll numbers */}
               <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
                 <div className="md:col-span-4">
                   <MoneyField
@@ -412,7 +474,6 @@ export default function PayrollCreatePage() {
                 </div>
               </div>
 
-              {/* Catatan */}
               <div>
                 <label className="text-sm font-semibold text-slate-800">Catatan</label>
                 <textarea
@@ -427,7 +488,6 @@ export default function PayrollCreatePage() {
                 )}
               </div>
 
-              {/* Total preview + actions */}
               <div className="rounded-2xl border border-slate-200 bg-slate-50/70 px-5 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <div>
                   <div className="text-xs text-slate-500">Total (preview)</div>
@@ -438,7 +498,6 @@ export default function PayrollCreatePage() {
                     Total = gaji pokok + tunjangan − potongan
                   </div>
 
-                  {/* ✅ Toggle Opsi 2 */}
                   <label className="mt-3 inline-flex items-center gap-2 text-sm text-slate-700 select-none">
                     <input
                       type="checkbox"
@@ -474,7 +533,6 @@ export default function PayrollCreatePage() {
           </div>
         </div>
 
-        {/* tiny footer */}
         <div className="text-[11px] text-slate-500 flex items-center justify-between px-1">
           <span>© {new Date().getFullYear()} Human Plus Institute</span>
           <span>Payroll Internal System</span>

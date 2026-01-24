@@ -371,4 +371,137 @@ class CryptoService
         self::$activePrivatePemCache = Crypt::decryptString($key->private_key_pem_enc);
         return self::$activePrivatePemCache;
     }
+
+    // =====================================================
+// HYBRID untuk SALARY PROFILE (pakai salary_key_id)
+// - Field *_enc disimpan sebagai AES-128-GCM(DEK)
+// - DEK di-wrap RSA OAEP dan disimpan ke tabel crypto_keys
+// - salary_profiles.salary_key_id = "salarydek:<id>"
+// =====================================================
+
+public static function createSalaryDekKeyId(): string
+{
+    $rsa = self::activeRsaKey();
+    $dek16 = random_bytes(16);
+
+    // wrap DEK dengan RSA public key
+    $ok = openssl_public_encrypt($dek16, $dekWrappedBin, $rsa->public_key_pem, OPENSSL_PKCS1_OAEP_PADDING);
+    if (!$ok) {
+        throw new CryptoException('HYBRID RSA encrypt DEK failed: ' . openssl_error_string());
+    }
+
+    // simpan wrapped DEK + meta ke crypto_keys
+    $row = new CryptoKey();
+    $row->status = 'salary_dek';
+
+    // pakai kolom yang sudah ada sebagai storage:
+    // - public_key_pem => wrapped DEK base64
+    // - private_key_pem_enc => meta JSON terenkripsi
+    $row->public_key_pem = base64_encode($dekWrappedBin);
+    $row->private_key_pem_enc = Crypt::encryptString(json_encode([
+        'v' => 1,
+        'type' => 'salary_dek',
+        'rsa_key_id' => (int) $rsa->id,
+        'wrap' => 'RSA-2048-OAEP',
+        'data_cipher' => 'AES-128-GCM',
+    ], JSON_UNESCAPED_SLASHES));
+    $row->save();
+
+    return 'salarydek:' . $row->id;
+}
+
+private static function loadSalaryDek(string $salaryKeyId): string
+{
+    if (!str_starts_with($salaryKeyId, 'salarydek:')) {
+        throw new CryptoException("salary_key_id format invalid untuk HYBRID: {$salaryKeyId}");
+    }
+
+    $id = (int) substr($salaryKeyId, strlen('salarydek:'));
+    if ($id <= 0) {
+        throw new CryptoException("salary_key_id invalid: {$salaryKeyId}");
+    }
+
+    $row = CryptoKey::findOrFail($id);
+
+    // wrapped DEK
+    $dekEncB64 = (string) $row->public_key_pem;
+    $dekWrappedBin = base64_decode($dekEncB64, true);
+    if ($dekWrappedBin === false) {
+        throw new CryptoException('Wrapped DEK base64 invalid.');
+    }
+
+    // meta
+    $metaJson = Crypt::decryptString($row->private_key_pem_enc);
+    $meta = json_decode($metaJson, true);
+    if (!is_array($meta) || empty($meta['rsa_key_id'])) {
+        throw new CryptoException('Salary DEK meta invalid.');
+    }
+
+    $rsaKeyId = (int) $meta['rsa_key_id'];
+
+    // private pem untuk rsaKeyId tsb
+    if (self::$activeRsaKeyCache && self::$activeRsaKeyCache->id === $rsaKeyId) {
+        $privatePem = self::activePrivatePem();
+    } else {
+        $rsaRow = CryptoKey::findOrFail($rsaKeyId);
+        $privatePem = Crypt::decryptString($rsaRow->private_key_pem_enc);
+    }
+
+    // unwrap DEK
+    $ok = openssl_private_decrypt($dekWrappedBin, $dek16, $privatePem, OPENSSL_PKCS1_OAEP_PADDING);
+    if (!$ok || strlen($dek16) !== 16) {
+        throw new CryptoException('HYBRID RSA decrypt DEK failed: ' . openssl_error_string());
+    }
+
+    return $dek16; // 16 bytes
+}
+
+/**
+ * Enkripsi 1 value salary sesuai alg (AES / RSA / HYBRID)
+ * Return: [ciphertext, salary_key_id|null, alg_normalized]
+ */
+public static function encryptSalaryValue(string $plain, string $alg, ?string $salaryKeyId = null): array
+{
+    $alg = strtoupper((string) $alg);
+
+    if ($alg === 'HYBRID') {
+        if (!$salaryKeyId) {
+            $salaryKeyId = self::createSalaryDekKeyId(); // buat DEK baru (per salary profile)
+        }
+        $dek16 = self::loadSalaryDek($salaryKeyId);
+        $ct = self::aesGcmEncryptWithKey($plain, $dek16);
+        return [$ct, $salaryKeyId, 'HYBRID'];
+    }
+
+    if ($alg === 'RSA') {
+        return [self::encryptRSA($plain), null, 'RSA'];
+    }
+
+    // default AES
+    return [self::encryptAESGCM($plain), self::keyId(), 'AES'];
+}
+
+/**
+ * Dekripsi 1 value salary sesuai alg (AES / RSA / HYBRID)
+ */
+public static function decryptSalaryValue(string $cipher, string $alg, ?string $salaryKeyId = null): string
+{
+    $alg = strtoupper((string) $alg);
+
+    if ($alg === 'HYBRID') {
+        if (!$salaryKeyId) {
+            throw new CryptoException('HYBRID salary butuh salary_key_id.');
+        }
+        $dek16 = self::loadSalaryDek($salaryKeyId);
+        return (string) self::aesGcmDecryptWithKey($cipher, $dek16);
+    }
+
+    if ($alg === 'RSA') {
+        return (string) self::decryptRSA($cipher);
+    }
+
+    // default AES
+    return (string) self::decryptAESGCM($cipher);
+}
+
 }

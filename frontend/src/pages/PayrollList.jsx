@@ -13,6 +13,13 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
+/**
+ * PAYROLL LIST (FULL)
+ * - Kolom "Alasan (Reject)" dihapus dari tabel
+ * - Saat status REJECTED: tampil ikon ⓘ kecil di samping badge (klik -> modal alasan)
+ * - Tombol Edit TIDAK dihilangkan, tapi di-disable untuk status: requested/approved/paid
+ * - Kolom Aksi dirapikan: posisinya center dan tombol seragam
+ */
 export default function PayrollList() {
   const [rows, setRows] = useState([]);
   const [err, setErr] = useState("");
@@ -44,6 +51,12 @@ export default function PayrollList() {
   const [paidNote, setPaidNote] = useState("");
   const [paidSubmitting, setPaidSubmitting] = useState(false);
 
+  // =========================
+  // ✅ REJECT NOTE MODAL STATE
+  // =========================
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [noteTarget, setNoteTarget] = useState(null);
+
   const openPaidModal = (row) => {
     setPaidTarget(row);
     setPaidFile(null);
@@ -59,6 +72,16 @@ export default function PayrollList() {
     setPaidFile(null);
     setPaidRef("");
     setPaidNote("");
+  };
+
+  const openNoteModal = (row) => {
+    setNoteTarget(row);
+    setNoteOpen(true);
+  };
+
+  const closeNoteModal = () => {
+    setNoteOpen(false);
+    setNoteTarget(null);
   };
 
   // ===== Helpers =====
@@ -103,6 +126,7 @@ export default function PayrollList() {
     setErr("");
     setLoading(true);
     try {
+      // Director default: only requested
       const qs = isDirector ? "?status=requested" : "";
       const data = await api(`/payrolls${qs}`);
       setRows(Array.isArray(data) ? data : data?.data ?? []);
@@ -186,7 +210,6 @@ export default function PayrollList() {
       const BASE_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
       const url = `${BASE_URL}/api/payrolls/${paidTarget.id}/mark-paid`;
 
-      // ✅ TOKEN YANG BENAR (dari auth.js kamu: payroll_token)
       const token = getToken();
 
       const res = await fetch(url, {
@@ -194,7 +217,6 @@ export default function PayrollList() {
         headers: {
           Accept: "application/json",
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          // jangan set Content-Type (biar boundary FormData otomatis)
         },
         body: fd,
       });
@@ -376,7 +398,8 @@ export default function PayrollList() {
                 Payroll
               </h1>
               <p className="mt-1 text-sm text-slate-600">
-                Kelola dan lihat slip gaji per periode. Gunakan pencarian & filter agar lebih cepat.
+                Kelola dan lihat slip gaji per periode. Gunakan pencarian & filter
+                agar lebih cepat.
               </p>
 
               <div className="mt-3 flex flex-wrap gap-2">
@@ -431,7 +454,9 @@ export default function PayrollList() {
         <div className="rounded-3xl border border-slate-200 bg-white/70 backdrop-blur-xl shadow-[0_16px_50px_rgba(2,6,23,0.06)]">
           <div className="p-6 grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
             <div className="md:col-span-6">
-              <div className="text-sm font-semibold text-slate-800">Cari Karyawan</div>
+              <div className="text-sm font-semibold text-slate-800">
+                Cari Karyawan
+              </div>
               <div className="mt-2 relative">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
                   🔎
@@ -446,7 +471,9 @@ export default function PayrollList() {
             </div>
 
             <div className="md:col-span-4">
-              <div className="text-sm font-semibold text-slate-800">Filter Periode</div>
+              <div className="text-sm font-semibold text-slate-800">
+                Filter Periode
+              </div>
               <select
                 value={period}
                 onChange={(e) => setPeriod(e.target.value)}
@@ -477,7 +504,9 @@ export default function PayrollList() {
         <div className="rounded-3xl border border-slate-200 bg-white/75 backdrop-blur-xl shadow-[0_16px_50px_rgba(2,6,23,0.06)] overflow-hidden">
           <div className="px-8 py-5 border-b border-slate-200/70 flex items-center justify-between">
             <div>
-              <div className="text-sm font-semibold text-slate-900">Payroll Records</div>
+              <div className="text-sm font-semibold text-slate-900">
+                Payroll Records
+              </div>
               <div className="text-xs text-slate-500">
                 Klik baris untuk membuka detail payroll.
               </div>
@@ -502,12 +531,10 @@ export default function PayrollList() {
                     </TableHead>
                     <TableHead className="px-8 text-slate-700">Periode</TableHead>
                     <TableHead className="px-8 text-slate-700">Status</TableHead>
-                    <TableHead className="px-8 text-slate-700">
-                      Akses Nominal
-                    </TableHead>
+                    <TableHead className="px-8 text-slate-700">Alasan</TableHead>
 
                     {canAction && (
-                      <TableHead className="px-8 text-right text-slate-700 w-[340px]">
+                      <TableHead className="px-8 text-right text-slate-700 w-[360px]">
                         Aksi
                       </TableHead>
                     )}
@@ -515,134 +542,174 @@ export default function PayrollList() {
                 </TableHeader>
 
                 <TableBody>
-                  {paged.map((r, idx) => (
-                    <TableRow
-                      key={r.id}
-                      className={[
-                        "cursor-pointer transition",
-                        idx % 2 === 0 ? "bg-white/40" : "bg-white/20",
-                        "hover:bg-slate-50/80",
-                      ].join(" ")}
-                      onClick={() => navigate(`/payrolls/${r.id}`)}
-                    >
-                      <TableCell className="px-8 first:pl-10 py-5">
-                        <div className="flex items-start gap-3">
-                          <div className="mt-0.5 h-10 w-10 rounded-2xl border border-slate-200 bg-white grid place-items-center text-sm font-extrabold text-slate-700 shadow-sm">
-                            {initials(r.employee_name)}
-                          </div>
-                          <div>
-                            <div className="font-semibold text-slate-900">
-                              {r.employee_name ?? "-"}
+                  {paged.map((r, idx) => {
+                    const st = statusLower(r.status);
+                    const note = String(r.approval_note || "").trim();
+
+                    // ✅ Edit tetap ada, tapi dikunci saat sudah masuk alur approval/pembayaran
+                    const editLocked = ["requested", "approved", "paid"].includes(st);
+
+                    return (
+                      <TableRow
+                        key={r.id}
+                        className={[
+                          "cursor-pointer transition",
+                          idx % 2 === 0 ? "bg-white/40" : "bg-white/20",
+                          "hover:bg-slate-50/80",
+                        ].join(" ")}
+                        onClick={() => navigate(`/payrolls/${r.id}`)}
+                      >
+                        <TableCell className="px-8 first:pl-10 py-5">
+                          <div className="flex items-start gap-3">
+                            <div className="mt-0.5 h-10 w-10 rounded-2xl border border-slate-200 bg-white grid place-items-center text-sm font-extrabold text-slate-700 shadow-sm">
+                              {initials(r.employee_name)}
                             </div>
-                            {r.employee_code && (
-                              <div className="text-xs text-slate-500">
-                                {r.employee_code}
+                            <div>
+                              <div className="font-semibold text-slate-900">
+                                {r.employee_name ?? "-"}
                               </div>
-                            )}
+                              {r.employee_code && (
+                                <div className="text-xs text-slate-500">
+                                  {r.employee_code}
+                                </div>
+                              )}
+                            </div>
                           </div>
-                        </div>
+                        </TableCell>
+
+                        <TableCell className="px-8 text-slate-700">
+                          <span className="inline-flex rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs font-semibold text-slate-700">
+                            {monthLabel(periodKey(r.periode))}
+                          </span>
+                        </TableCell>
+
+                        {/* ✅ Status + info icon when rejected */}
+                        <TableCell className="px-8">
+                          <div className="inline-flex items-center gap-2">
+                            <StatusBadge status={r.status} />
+
+                          </div>
+                        </TableCell>
+
+                        <TableCell className="px-8">
+                        {st === "rejected" ? (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openNoteModal(r);
+                            }}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-rose-200 bg-rose-50 text-rose-700 font-black hover:bg-rose-100"
+                            title="Lihat alasan reject"
+                            aria-label="Lihat alasan reject"
+                          >
+                            !
+                          </button>
+                        ) : (
+                          <span className="text-xs text-slate-400">-</span>
+                        )}
                       </TableCell>
 
-                      <TableCell className="px-8 text-slate-700">
-                        <span className="inline-flex rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs font-semibold text-slate-700">
-                          {monthLabel(periodKey(r.periode))}
-                        </span>
-                      </TableCell>
-
-                      <TableCell className="px-8">
-                        <StatusBadge status={r.status} />
-                      </TableCell>
-
-                      <TableCell className="px-8">
-                        <AccessBadge masked={r.masked} />
-                      </TableCell>
-
-                      {canAction && (
-                        <TableCell
-                          className="px-8 text-right"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <div className="inline-flex gap-2">
-                            {isDirector && (
-                              <>
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="rounded-xl border-slate-200 bg-white hover:bg-slate-50"
-                                  onClick={() => navigate(`/payrolls/${r.id}`)}
-                                >
-                                  Detail
-                                </Button>
-
-                                {statusLower(r.status) === "requested" && (
+                        {canAction && (
+                          <TableCell
+                            className="px-8"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {/* ✅ Aksi dibuat CENTER di cell */}
+                            <div className="flex justify-end">
+                              {/* ✅ width stabil, biar posisi tombol rapi */}
+                              <div className="flex flex-wrap justify-end gap-2 min-w-[340px]">
+                                {isDirector && (
                                   <>
                                     <Button
                                       size="sm"
-                                      className="rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white"
-                                      onClick={() => onApprove(r.id)}
+                                      variant="outline"
+                                      className="h-9 rounded-xl border-slate-200 bg-white hover:bg-slate-50"
+                                      onClick={() => navigate(`/payrolls/${r.id}`)}
                                     >
-                                      Approve
+                                      Detail
+                                    </Button>
+
+                                    {st === "requested" && (
+                                      <>
+                                        <Button
+                                          size="sm"
+                                          className="h-9 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white"
+                                          onClick={() => onApprove(r.id)}
+                                        >
+                                          Approve
+                                        </Button>
+
+                                        <Button
+                                          size="sm"
+                                          variant="destructive"
+                                          className="h-9 rounded-xl"
+                                          onClick={() => onReject(r.id)}
+                                        >
+                                          Reject
+                                        </Button>
+                                      </>
+                                    )}
+                                  </>
+                                )}
+
+                                {isFAT && (
+                                  <>
+                                    {st === "draft" && (
+                                      <Button
+                                        size="sm"
+                                        className="h-9 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white"
+                                        onClick={() => onRequestPayment(r.id)}
+                                      >
+                                        Request Approval
+                                      </Button>
+                                    )}
+
+                                    {st === "approved" && (
+                                      <Button
+                                        size="sm"
+                                        className="h-9 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white"
+                                        onClick={() => openPaidModal(r)}
+                                      >
+                                        Mark Paid
+                                      </Button>
+                                    )}
+
+                                    {/* ✅ Perbaiki: ganti warna biar gak tabrakan sama Delete */}
+
+                                    {/* ✅ Edit tetap ada, tapi dikunci saat requested/approved/paid */}
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-9 rounded-xl border-slate-200 bg-white hover:bg-slate-50 disabled:opacity-50 disabled:pointer-events-none"
+                                      onClick={() => navigate(`/payrolls/${r.id}/edit`)}
+                                      disabled={editLocked}
+                                      title={
+                                        editLocked
+                                          ? "Tidak bisa edit karena payroll sudah masuk proses approval/pembayaran."
+                                          : "Edit payroll"
+                                      }
+                                    >
+                                      Edit
                                     </Button>
 
                                     <Button
                                       size="sm"
                                       variant="destructive"
-                                      className="rounded-xl"
-                                      onClick={() => onReject(r.id)}
+                                      className="h-9 rounded-xl"
+                                      onClick={() => onDelete(r.id)}
                                     >
-                                      Reject
+                                      Delete
                                     </Button>
                                   </>
                                 )}
-                              </>
-                            )}
-
-                            {isFAT && (
-                              <>
-                                {statusLower(r.status) === "draft" && (
-                                  <Button
-                                    size="sm"
-                                    className="rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white"
-                                    onClick={() => onRequestPayment(r.id)}
-                                  >
-                                    Request Approval
-                                  </Button>
-                                )}
-
-                                {statusLower(r.status) === "approved" && (
-                                  <Button
-                                    size="sm"
-                                    className="rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white"
-                                    onClick={() => openPaidModal(r)}
-                                  >
-                                    Mark Paid
-                                  </Button>
-                                )}
-
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  className="rounded-xl border-slate-200 bg-white hover:bg-slate-50"
-                                  onClick={() => navigate(`/payrolls/${r.id}/edit`)}
-                                >
-                                  Edit
-                                </Button>
-
-                                <Button
-                                  size="sm"
-                                  variant="destructive"
-                                  className="rounded-xl"
-                                  onClick={() => onDelete(r.id)}
-                                >
-                                  Delete
-                                </Button>
-                              </>
-                            )}
-                          </div>
-                        </TableCell>
-                      )}
-                    </TableRow>
-                  ))}
+                              </div>
+                            </div>
+                          </TableCell>
+                        )}
+                      </TableRow>
+                    );
+                  })}
 
                   {filtered.length === 0 && !loading && !err && (
                     <TableRow>
@@ -673,7 +740,8 @@ export default function PayrollList() {
           {/* Pagination */}
           <div className="px-8 py-5 border-t border-slate-200/70 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-xs text-slate-500">
-              © {new Date().getFullYear()} Human Plus Institute — Payroll Internal System
+              © {new Date().getFullYear()} Human Plus Institute — Payroll Internal
+              System
             </div>
 
             <div className="flex items-center gap-2 justify-end">
@@ -822,6 +890,57 @@ export default function PayrollList() {
                 >
                   {paidSubmitting ? "Menyimpan..." : "Confirm Paid"}
                 </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ✅ MODAL LIHAT ALASAN REJECT */}
+      {noteOpen && (
+        <div className="fixed inset-0 z-[999]">
+          <div
+            className="absolute inset-0 bg-slate-900/40 backdrop-blur-[2px]"
+            onClick={closeNoteModal}
+          />
+          <div className="absolute inset-0 flex items-center justify-center p-4">
+            <div className="w-full max-w-xl rounded-3xl border border-slate-200 bg-white shadow-[0_20px_70px_rgba(2,6,23,0.25)] overflow-hidden">
+              <div className="px-6 py-5 border-b border-slate-200 flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-lg font-black text-slate-900">
+                    Alasan Reject
+                  </div>
+                  <div className="text-xs text-slate-500 mt-1">
+                    {noteTarget?.employee_name || "-"} (
+                    {noteTarget?.employee_code || "-"})
+                    {" • "}
+                    Periode: {monthLabel(periodKey(noteTarget?.periode))}
+                  </div>
+                </div>
+                <Button
+                  variant="outline"
+                  className="rounded-2xl"
+                  onClick={closeNoteModal}
+                >
+                  Tutup
+                </Button>
+              </div>
+
+              <div className="px-6 py-6">
+                <div className="rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4 text-sm text-rose-800 whitespace-pre-wrap">
+                  {String(noteTarget?.approval_note || "").trim() || "-"}
+                </div>
+
+                <div className="mt-4 flex justify-end">
+                  {isFAT && statusLower(noteTarget?.status) === "rejected" && (
+                    <Button
+                      className="rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold"
+                      onClick={() => navigate(`/payrolls/${noteTarget?.id}/edit`)}
+                    >
+                      Perbaiki Payroll
+                    </Button>
+                  )}
+                </div>
               </div>
             </div>
           </div>

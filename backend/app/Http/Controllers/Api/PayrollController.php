@@ -114,6 +114,10 @@ class PayrollController extends Controller
                 'created_by' => $p->user?->name,
                 'periode' => optional($p->periode)->toDateString(),
 
+                'approval_note' => $p->approval_note ?? null,
+                'rejected_by' => $p->rejected_by ?? null,
+                'rejected_at' => optional($p->rejected_at)->toISOString(),
+
                 'status' => $p->status ?? null,
                 'salary_alg' => $p->salary_alg ?? null,
 
@@ -904,14 +908,15 @@ public function rejectPayment(Request $request, Payroll $payroll)
         return response()->json(['message' => 'Tidak bisa reject untuk status ini.'], 422);
     }
 
+    $data = $request->validate([
+        'approval_note' => ['required', 'string', 'max:500'],
+    ]);
+
     $from = $payroll->status;
 
     $payroll->update([
         'status' => 'rejected',
-        'approval_note' => $request->input('approval_note'),
-        // optional: kalau mau bersih, bisa juga null-kan approved_by/approved_at kalau reject dari approved
-        // 'approved_by' => null,
-        // 'approved_at' => null,
+        'approval_note' => $data['approval_note'],
     ]);
 
     $this->audit($request, 'PAYROLL_REJECT_PAYMENT', $payroll, [

@@ -50,14 +50,26 @@ export default function EmployeesPage() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
 
+  // filters
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("all");
 
-  async function load() {
+  // sort
+  const [sortBy, setSortBy] = useState("name"); // atau "employee_code"
+  const [sortDir, setSortDir] = useState("asc");
+
+  async function load(override = {}) {
     setErr("");
     setLoading(true);
     try {
-      const data = await fetchEmployees();
+      const params = {
+        q: override.q ?? q,
+        status: override.status ?? status,
+        sort_by: override.sortBy ?? sortBy,
+        sort_dir: override.sortDir ?? sortDir,
+      };
+
+      const data = await fetchEmployees(params);
       setRows(Array.isArray(data) ? data : data?.data ?? []);
     } catch (e) {
       setErr(e?.message || "Gagal load employees");
@@ -66,10 +78,24 @@ export default function EmployeesPage() {
     }
   }
 
+  // initial load
   useEffect(() => {
     if (!canView) return;
     load();
-  }, []); // eslint-disable-line
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // auto reload when filter/sort changes (debounce for search)
+  useEffect(() => {
+    if (!canView) return;
+
+    const t = setTimeout(() => {
+      load();
+    }, 250);
+
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q, status, sortBy, sortDir]);
 
   const onDelete = async (id) => {
     if (!isHCGA) return;
@@ -85,40 +111,20 @@ export default function EmployeesPage() {
     }
   };
 
-  const filtered = useMemo(() => {
-    const qq = q.trim().toLowerCase();
-    return rows.filter((r) => {
-      const code = String(r?.employee_code ?? "").toLowerCase();
-      const name = String(r?.name ?? "").toLowerCase();
-      const dep = String(r?.department ?? "").toLowerCase();
-      const pos = String(r?.position ?? "").toLowerCase();
-      const st = String(r?.status ?? "").toLowerCase();
-
-      const matchQ =
-        !qq ||
-        code.includes(qq) ||
-        name.includes(qq) ||
-        dep.includes(qq) ||
-        pos.includes(qq);
-
-      const matchStatus = status === "all" || st === status;
-
-      return matchQ && matchStatus;
-    });
-  }, [rows, q, status]);
-
   const summary = useMemo(() => {
-    const total = filtered.length;
-    const active = filtered.filter(
+    const total = rows.length;
+    const active = rows.filter(
       (x) => String(x?.status).toLowerCase() === "active"
     ).length;
     const inactive = total - active;
     return { total, active, inactive };
-  }, [filtered]);
+  }, [rows]);
 
   const resetFilters = () => {
     setQ("");
     setStatus("all");
+    setSortBy("name");
+    setSortDir("asc");
   };
 
   if (!canView) {
@@ -173,7 +179,7 @@ export default function EmployeesPage() {
           <div className="flex flex-wrap items-center gap-2">
             <Button
               variant="outline"
-              onClick={load}
+              onClick={() => load()}
               disabled={loading}
               className="rounded-2xl bg-white/70 backdrop-blur border-slate-200 hover:bg-white"
             >
@@ -197,9 +203,10 @@ export default function EmployeesPage() {
           </div>
         )}
 
+        {/* FILTERS */}
         <div className="rounded-3xl border border-slate-200 bg-white/70 backdrop-blur-xl shadow-[0_16px_50px_rgba(2,6,23,0.06)]">
           <div className="p-5 grid grid-cols-1 md:grid-cols-12 gap-4 items-end">
-            <div className="md:col-span-8">
+            <div className="md:col-span-7">
               <div className="text-sm font-semibold text-slate-800">
                 Cari Employee
               </div>
@@ -214,9 +221,12 @@ export default function EmployeesPage() {
                   className="w-full rounded-2xl border border-slate-200 bg-white pl-10 pr-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-sky-300 focus:ring-4 focus:ring-sky-200/40"
                 />
               </div>
+              <div className="mt-1 text-[11px] text-slate-500">
+                Tips: ketik sebagian nama/kode, otomatis akan memfilter.
+              </div>
             </div>
 
-            <div className="md:col-span-3">
+            <div className="md:col-span-2">
               <div className="text-sm font-semibold text-slate-800">Status</div>
               <select
                 value={status}
@@ -227,6 +237,43 @@ export default function EmployeesPage() {
                 <option value="active">Active</option>
                 <option value="inactive">Inactive</option>
               </select>
+            </div>
+
+            <div className="md:col-span-2">
+              <div className="text-sm font-semibold text-slate-800">Urutkan</div>
+              <select
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+                className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-indigo-300 focus:ring-4 focus:ring-indigo-200/40"
+              >
+                <option value="name">Nama</option>
+                <option value="employee_code">Kode Karyawan</option>
+                <option value="department">Department</option>
+                <option value="position">Position</option>
+                <option value="status">Status</option>
+                <option value="created_at">Terbaru</option>
+              </select>
+
+              <div className="mt-2 flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="flex-1 rounded-2xl border-slate-200 bg-white hover:bg-slate-50"
+                  onClick={() => setSortDir("asc")}
+                  disabled={sortDir === "asc"}
+                >
+                  A–Z
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="flex-1 rounded-2xl border-slate-200 bg-white hover:bg-slate-50"
+                  onClick={() => setSortDir("desc")}
+                  disabled={sortDir === "desc"}
+                >
+                  Z–A
+                </Button>
+              </div>
             </div>
 
             <div className="md:col-span-1 flex md:justify-end">
@@ -242,6 +289,7 @@ export default function EmployeesPage() {
           </div>
         </div>
 
+        {/* TABLE */}
         <div className="rounded-3xl border border-slate-200 bg-white/75 backdrop-blur-xl shadow-[0_16px_50px_rgba(2,6,23,0.06)] overflow-hidden">
           <div className="px-6 py-5 border-b border-slate-200/70 flex items-center justify-between">
             <div>
@@ -253,7 +301,7 @@ export default function EmployeesPage() {
               </div>
             </div>
             <div className="text-xs text-slate-500">
-              {loading ? "Memuat..." : `${filtered.length} data`}
+              {loading ? "Memuat..." : `${rows.length} data`}
             </div>
           </div>
 
@@ -283,22 +331,28 @@ export default function EmployeesPage() {
                 <TableBody>
                   {loading && (
                     <TableRow>
-                      <TableCell colSpan={5} className="py-12 text-center text-slate-500">
+                      <TableCell
+                        colSpan={5}
+                        className="py-12 text-center text-slate-500"
+                      >
                         Loading...
                       </TableCell>
                     </TableRow>
                   )}
 
-                  {!loading && filtered.length === 0 && (
+                  {!loading && rows.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={5} className="py-12 text-center text-slate-500">
+                      <TableCell
+                        colSpan={5}
+                        className="py-12 text-center text-slate-500"
+                      >
                         Tidak ada employee yang sesuai.
                       </TableCell>
                     </TableRow>
                   )}
 
                   {!loading &&
-                    filtered.map((r, idx) => (
+                    rows.map((r, idx) => (
                       <TableRow
                         key={r.id}
                         className={[
@@ -359,7 +413,11 @@ export default function EmployeesPage() {
                                   <Button
                                     size="sm"
                                     className="rounded-xl bg-gradient-to-r from-sky-600 to-indigo-600 text-white font-bold hover:brightness-110"
-                                    onClick={() => nav(`/employees/${r.id}/salary-profile/new`)}
+                                    onClick={() =>
+                                      nav(
+                                        `/employees/${r.id}/salary-profile/new`
+                                      )
+                                    }
                                   >
                                     Set Salary
                                   </Button>

@@ -59,9 +59,21 @@ function buildApiError(res, data, fallbackMsg) {
  * Ambil list employee (lite) dengan filter status opsional
  * @param {string|null} status "active" | "inactive" | null
  */
-export async function fetchEmployeesLite(status = null) {
-  const qs = status ? `?status=${encodeURIComponent(status)}` : "";
-  const res = await fetch(`${API_BASE}/api/employees${qs}`, {
+export async function fetchEmployeesLite(input = null) {
+  // backward compatible: kalau dipanggil fetchEmployeesLite("active")
+  const params =
+    typeof input === "string"
+      ? { status: input }
+      : (input && typeof input === "object" ? input : {});
+
+  const url = new URL(`${API_BASE}/api/employees`);
+
+  Object.entries(params).forEach(([k, v]) => {
+    if (v === null || v === undefined || v === "") return;
+    url.searchParams.set(k, String(v));
+  });
+
+  const res = await fetch(url.toString(), {
     headers: authHeaders(),
   });
 
